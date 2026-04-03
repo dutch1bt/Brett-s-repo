@@ -9,11 +9,11 @@
     "seed": "node --experimental-sqlite scripts/seed.js"
   },
   "dependencies": {
-    "next": "14.2.5",
-    "react": "^18",
-    "react-dom": "^18",
     "bcryptjs": "^2.4.3",
-    "jose": "^5.3.0"
+    "jose": "^5.3.0",
+    "next": "^14.2.35",
+    "react": "^18",
+    "react-dom": "^18"
   },
   "devDependencies": {
     "autoprefixer": "^10.0.1",
