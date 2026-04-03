@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import PostCard from '@/components/PostCard';
 import Avatar from '@/components/Avatar';
+import InstallBanner from '@/components/InstallBanner';
 
 export default function FeedPage() {
   const [posts, setPosts] = useState([]);
@@ -74,7 +75,7 @@ export default function FeedPage() {
         <div className="flex items-center justify-between px-4 py-3"
              style={{ paddingTop: 'calc(0.75rem + env(safe-area-inset-top, 0px))' }}>
           <div>
-            <h1 className="text-lg font-bold text-white">The Back Nine</h1>
+            <h1 className="text-lg font-bold text-white">Sandbaggers</h1>
             <p className="text-green-500 text-xs">Member Feed</p>
           </div>
           <button
@@ -139,6 +140,8 @@ export default function FeedPage() {
           </div>
         </div>
       )}
+
+      <InstallBanner />
 
       {/* Feed */}
       <div className="p-4 space-y-4">

@@ -41,7 +41,7 @@ export default function LoginPage() {
       {/* Logo / Brand */}
       <div className="text-center mb-10">
         <div className="text-6xl mb-4">⛳</div>
-        <h1 className="text-4xl font-extrabold text-white tracking-tight">The Back Nine</h1>
+        <h1 className="text-4xl font-extrabold text-white tracking-tight">Sandbaggers</h1>
         <p className="text-green-400 mt-2 text-sm font-medium tracking-wide uppercase">Member Portal</p>
       </div>
 
