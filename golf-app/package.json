@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node --experimental-sqlite node_modules/.bin/next dev -H 0.0.0.0",
     "build": "node --experimental-sqlite node_modules/.bin/next build",
-    "start": "node --experimental-sqlite node_modules/.bin/next start",
+    "start": "node --experimental-sqlite scripts/start.js",
     "seed": "node --experimental-sqlite scripts/seed.js"
   },
   "dependencies": {
