@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Avatar from '@/components/Avatar';
+import EditProfileModal from '@/components/EditProfileModal';
 
 const MEDAL_EMOJIS = ['🥇', '🥈', '🥉'];
 
@@ -12,9 +13,6 @@ export default function ProfilePage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [bio, setBio] = useState('');
-  const [ghin, setGhin] = useState('');
-  const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState('stats');
   const [members, setMembers] = useState([]);
 
@@ -24,28 +22,10 @@ export default function ProfilePage() {
       fetch('/api/members').then((r) => r.json()),
     ]).then(([profileData, membersData]) => {
       setData(profileData);
-      setBio(profileData.user?.bio || '');
-      setGhin(profileData.user?.ghin_number || '');
       setMembers(membersData.members || []);
       setLoading(false);
     });
   }, []);
-
-  async function saveProfile() {
-    setSaving(true);
-    try {
-      const res = await fetch('/api/profile', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bio, ghin_number: ghin }),
-      });
-      const d = await res.json();
-      setData((prev) => ({ ...prev, user: d.user }));
-      setEditing(false);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -239,35 +219,14 @@ export default function ProfilePage() {
 
       {/* Edit Profile Modal */}
       {editing && (
-        <div className="fixed inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-lg mx-auto bg-green-950 rounded-t-3xl border-t border-green-800 p-5"
-               style={{ paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))' }}>
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-white font-bold text-lg">Edit Profile</h2>
-              <button onClick={() => setEditing(false)} className="text-green-500">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-green-400 text-xs font-semibold uppercase tracking-wide mb-1.5">GHIN Number</label>
-                <input value={ghin} onChange={(e) => setGhin(e.target.value)} className="input" placeholder="e.g. 1234567" />
-                <p className="text-green-600 text-xs mt-1">Your USGA GHIN number to sync your handicap</p>
-              </div>
-              <div>
-                <label className="block text-green-400 text-xs font-semibold uppercase tracking-wide mb-1.5">Bio</label>
-                <textarea value={bio} onChange={(e) => setBio(e.target.value)}
-                          className="input resize-none" rows={3} placeholder="Tell the group about yourself..." />
-              </div>
-              <button onClick={saveProfile} disabled={saving} className="w-full btn-primary py-3">
-                {saving ? 'Saving...' : 'Save Changes'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <EditProfileModal
+          user={user}
+          onClose={() => setEditing(false)}
+          onSaved={(updatedUser) => {
+            setData((prev) => ({ ...prev, user: updatedUser }));
+            setEditing(false);
+          }}
+        />
       )}
     </div>
   );

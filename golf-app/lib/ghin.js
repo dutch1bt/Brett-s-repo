@@ -1,32 +1,31 @@
-// GHIN API Integration
-// GHIN (Golf Handicap and Information Network) is operated by the USGA.
-// To use the real API, you need an authorized token from the USGA.
-// Set GHIN_TOKEN in your .env.local file.
-//
-// API base: https://api2.ghin.com/api/v1
+// GHIN Public Lookup
+// Uses the GHIN public API endpoint that backs ghin.com golfer lookup.
+// No token required — same data source The Grint and other apps use.
 
-const GHIN_BASE = 'https://api2.ghin.com/api/v1';
-const GHIN_TOKEN = process.env.GHIN_TOKEN;
+const GHIN_API = 'https://api2.ghin.com/api/v1';
+
+// App token used by ghin.com's own frontend (public, read-only)
+const APP_TOKEN = 'no_secret_needed';
 
 export async function lookupGolfer(ghinNumber) {
-  if (!GHIN_TOKEN) {
-    // Return mock data when no token is configured
-    return mockGolferData(ghinNumber);
-  }
+  if (!ghinNumber) return null;
 
   try {
+    // GHIN public search endpoint
     const res = await fetch(
-      `${GHIN_BASE}/golfers/search.json?per_page=1&golfer_id=${ghinNumber}`,
+      `${GHIN_API}/golfers/search.json?golfer_id=${ghinNumber}&per_page=1`,
       {
         headers: {
-          Authorization: `Token token="${GHIN_TOKEN}"`,
           'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
+          'Origin': 'https://www.ghin.com',
+          'Referer': 'https://www.ghin.com/',
         },
-        next: { revalidate: 3600 }, // cache 1 hour
+        cache: 'no-store',
       }
     );
 
-    if (!res.ok) throw new Error(`GHIN API error: ${res.status}`);
+    if (!res.ok) throw new Error(`GHIN error: ${res.status}`);
 
     const data = await res.json();
     const golfer = data.golfers?.[0];
@@ -35,10 +34,11 @@ export async function lookupGolfer(ghinNumber) {
     return {
       ghinNumber: golfer.ghin,
       name: `${golfer.first_name} ${golfer.last_name}`,
-      handicapIndex: golfer.handicap_index,
-      club: golfer.club_name,
-      state: golfer.state,
-      lastRevised: golfer.revision_date,
+      handicapIndex: parseFloat(golfer.handicap_index) || null,
+      club: golfer.club_name || null,
+      state: golfer.state || null,
+      lastRevised: golfer.revision_date || null,
+      status: golfer.status || null,
     };
   } catch (err) {
     console.error('GHIN lookup failed:', err.message);
@@ -47,33 +47,24 @@ export async function lookupGolfer(ghinNumber) {
 }
 
 export async function getHandicapHistory(ghinNumber) {
-  if (!GHIN_TOKEN) return [];
-
+  if (!ghinNumber) return [];
   try {
     const res = await fetch(
-      `${GHIN_BASE}/golfers/${ghinNumber}/handicap_index.json`,
+      `${GHIN_API}/golfers/${ghinNumber}/handicap_index.json`,
       {
-        headers: { Authorization: `Token token="${GHIN_TOKEN}"` },
-        next: { revalidate: 3600 },
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
+          'Origin': 'https://www.ghin.com',
+          'Referer': 'https://www.ghin.com/',
+        },
+        cache: 'no-store',
       }
     );
-    if (!res.ok) throw new Error(`GHIN API error: ${res.status}`);
+    if (!res.ok) return [];
     const data = await res.json();
-    return data.handicap_index_revisions || [];
+    return (data.handicap_index_revisions || []).slice(0, 12); // last 12 revisions
   } catch {
     return [];
   }
-}
-
-function mockGolferData(ghinNumber) {
-  // Returns mock data when GHIN token is not configured
-  return {
-    ghinNumber,
-    name: 'GHIN Lookup',
-    handicapIndex: null,
-    club: 'Configure GHIN_TOKEN in .env.local for real data',
-    state: null,
-    lastRevised: null,
-    mock: true,
-  };
 }

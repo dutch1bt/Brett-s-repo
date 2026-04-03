@@ -55,23 +55,15 @@ export async function PATCH(request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { bio, ghin_number } = await request.json();
+  const { bio, ghin_number, handicap } = await request.json();
 
   const db = getDb();
-  db.prepare('UPDATE users SET bio = ?, ghin_number = ? WHERE id = ?').run(
+  db.prepare('UPDATE users SET bio = ?, ghin_number = ?, handicap = ? WHERE id = ?').run(
     bio || '',
     ghin_number || '',
+    handicap != null ? handicap : null,
     session.userId
   );
-
-  // If GHIN number provided, try to fetch handicap
-  if (ghin_number) {
-    const { lookupGolfer } = await import('@/lib/ghin');
-    const golfer = await lookupGolfer(ghin_number);
-    if (golfer?.handicapIndex != null) {
-      db.prepare('UPDATE users SET handicap = ? WHERE id = ?').run(golfer.handicapIndex, session.userId);
-    }
-  }
 
   const user = db
     .prepare('SELECT id, name, email, role, ghin_number, handicap, avatar_url, bio FROM users WHERE id = ?')
