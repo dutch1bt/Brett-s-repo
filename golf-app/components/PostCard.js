@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import Avatar from './Avatar';
 
 function timeAgo(dateStr) {
@@ -70,13 +71,13 @@ export default function PostCard({ post, currentUserId }) {
   return (
     <div className="card overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-3 p-4 pb-3">
+      <Link href={`/members/${post.user_id}`} className="flex items-center gap-3 p-4 pb-3 hover:bg-green-800/20 transition-colors">
         <Avatar name={post.user_name} avatarUrl={post.avatar_url} size="sm" />
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-green-50 text-sm leading-tight truncate">{post.user_name}</p>
           <p className="text-green-500 text-xs">{timeAgo(post.created_at)}</p>
         </div>
-      </div>
+      </Link>
 
       {/* Content */}
       <p className="px-4 pb-3 text-green-100 text-sm leading-relaxed whitespace-pre-wrap">

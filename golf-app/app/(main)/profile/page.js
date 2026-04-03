@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import Avatar from '@/components/Avatar';
 
 const MEDAL_EMOJIS = ['🥇', '🥈', '🥉'];
@@ -159,8 +160,8 @@ export default function ProfilePage() {
               </div>
               <div className="divide-y divide-green-800/30">
                 {members.map((m, i) => (
-                  <div key={m.id}
-                       className={`flex items-center gap-3 px-4 py-3 ${m.id === user?.id ? 'bg-green-800/20' : ''}`}>
+                  <Link key={m.id} href={m.id === user?.id ? '/profile' : `/members/${m.id}`}
+                       className={`flex items-center gap-3 px-4 py-3 hover:bg-green-800/30 transition-colors ${m.id === user?.id ? 'bg-green-800/20' : ''}`}>
                     <span className={`pos-badge ${i === 0 ? 'pos-1' : i === 1 ? 'pos-2' : i === 2 ? 'pos-3' : 'pos-other'}`}>
                       {i + 1}
                     </span>
@@ -172,7 +173,7 @@ export default function ProfilePage() {
                       <p className="text-green-600 text-xs">{m.wins} wins · {m.trophy_count} 🏆</p>
                     </div>
                     <span className="text-amber-400 font-bold text-sm">{Math.round(m.total_points || 0)}</span>
-                  </div>
+                  </Link>
                 ))}
               </div>
             </div>

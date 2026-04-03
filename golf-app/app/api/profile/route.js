@@ -33,7 +33,7 @@ export async function GET(request) {
     .get(userId).n;
 
   const recentResults = db.prepare(`
-    SELECT er.position, er.gross_score, er.net_score, er.points, e.name AS event_name, e.date, e.location
+    SELECT er.position, er.gross_score, er.net_score, er.points, e.id AS event_id, e.name AS event_name, e.date, e.location
     FROM event_results er
     JOIN events e ON e.id = er.event_id
     WHERE er.user_id = ?
