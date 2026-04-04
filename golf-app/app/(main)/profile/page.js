@@ -137,6 +137,27 @@ export default function ProfilePage() {
         </div>
       </div>
 
+      {/* GHIN Setup Banner — shown when no GHIN number is set */}
+      {!user?.ghin_number && (
+        <div className="mx-4 mt-4 rounded-2xl bg-amber-900/20 border border-amber-500/30 p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl">🏌️</span>
+            <div className="flex-1">
+              <p className="text-amber-300 font-bold text-sm">Connect your GHIN account</p>
+              <p className="text-amber-200/70 text-xs mt-0.5 leading-relaxed">
+                Add your GHIN number to sync your handicap and automatically post rounds to the feed.
+              </p>
+              <button
+                onClick={() => setEditing(true)}
+                className="mt-3 bg-amber-600/30 border border-amber-500/50 text-amber-300 hover:bg-amber-600/50 text-xs font-semibold px-4 py-2 rounded-xl transition-colors"
+              >
+                Set Up GHIN →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex border-b border-green-800/50 bg-green-950/50">
         {['stats', 'results', 'posts'].map((t) => (
