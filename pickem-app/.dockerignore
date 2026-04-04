@@ -1,0 +1,5 @@
+node_modules
+.next
+pickem.db
+*.db
+.env*
