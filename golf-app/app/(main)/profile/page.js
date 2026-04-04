@@ -205,9 +205,16 @@ export default function ProfilePage() {
                     </span>
                     <Avatar name={m.name} size="xs" />
                     <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-semibold truncate ${m.id === user?.id ? 'text-green-300' : 'text-green-100'}`}>
-                        {m.name} {m.id === user?.id && '(you)'}
-                      </p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className={`text-sm font-semibold truncate ${m.id === user?.id ? 'text-green-300' : 'text-green-100'}`}>
+                          {m.name} {m.id === user?.id && '(you)'}
+                        </p>
+                        {!m.ghin_number && (
+                          <span className="text-xs bg-red-900/40 border border-red-700/50 text-red-400 px-1.5 py-0.5 rounded-full leading-none flex-shrink-0">
+                            No GHIN
+                          </span>
+                        )}
+                      </div>
                       <p className="text-green-600 text-xs">{m.wins} wins · {m.trophy_count} 🏆</p>
                     </div>
                     <span className="text-amber-400 font-bold text-sm">{Math.round(m.total_points || 0)}</span>

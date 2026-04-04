@@ -58,12 +58,21 @@ export async function PATCH(request) {
   const { bio, ghin_number, handicap } = await request.json();
 
   const db = getDb();
-  db.prepare('UPDATE users SET bio = ?, ghin_number = ?, handicap = ? WHERE id = ?').run(
-    bio || '',
-    ghin_number || '',
-    handicap != null ? handicap : null,
-    session.userId
-  );
+  // Only update handicap if a confirmed GHIN sync value is passed — no manual overrides
+  if (handicap != null) {
+    db.prepare('UPDATE users SET bio = ?, ghin_number = ?, handicap = ? WHERE id = ?').run(
+      bio || '',
+      ghin_number || null,
+      handicap,
+      session.userId
+    );
+  } else {
+    db.prepare('UPDATE users SET bio = ?, ghin_number = ? WHERE id = ?').run(
+      bio || '',
+      ghin_number || null,
+      session.userId
+    );
+  }
 
   const user = db
     .prepare('SELECT id, name, email, role, ghin_number, handicap, avatar_url, bio FROM users WHERE id = ?')

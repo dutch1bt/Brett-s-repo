@@ -5,7 +5,6 @@ import { useState } from 'react';
 export default function EditProfileModal({ user, onClose, onSaved }) {
   const [bio, setBio] = useState(user?.bio || '');
   const [ghin, setGhin] = useState(user?.ghin_number || '');
-  const [handicap, setHandicap] = useState(user?.handicap?.toFixed(1) || '');
   const [ghinData, setGhinData] = useState(null);
   const [ghinError, setGhinError] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -24,14 +23,12 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        // API lookup failed (no token or API error) — still allow manual save
-        setGhinError('Could not auto-fetch from GHIN — enter your handicap manually below, then Save.');
+        setGhinError('Could not fetch from GHIN right now. Save your number — handicap will sync once the GHIN API connection is configured.');
         return;
       }
       setGhinData(data.golfer);
-      setHandicap(data.golfer.handicapIndex?.toFixed(1) || '');
     } catch {
-      setGhinError('Network error — enter your handicap manually below, then Save.');
+      setGhinError('Network error. Save your number anyway — it will sync when available.');
     } finally {
       setSyncing(false);
     }
@@ -40,10 +37,15 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
   async function save() {
     setSaving(true);
     try {
+      const body = { bio, ghin_number: ghin.trim() };
+      // Only update handicap if we got a confirmed GHIN sync
+      if (ghinData?.handicapIndex != null) {
+        body.handicap = ghinData.handicapIndex;
+      }
       const res = await fetch('/api/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bio, ghin_number: ghin.trim(), handicap: parseFloat(handicap) || null }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok) onSaved(data.user);
@@ -107,19 +109,14 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
                   ) : 'Sync'}
                 </button>
               </div>
-              <p className="text-green-600 text-xs mt-1.5">
-                Sync auto-fills your handicap. Or skip it — just enter your number and save.
-              </p>
             </div>
 
-            {/* Error — non-blocking, shows hint to enter manually */}
             {ghinError && (
               <div className="bg-amber-900/30 border border-amber-700/40 rounded-xl px-3 py-2">
                 <p className="text-amber-300 text-sm">{ghinError}</p>
               </div>
             )}
 
-            {/* Success */}
             {ghinData && (
               <div className="bg-green-900/50 border border-green-600/40 rounded-xl p-3 space-y-1">
                 <div className="flex items-center gap-2">
@@ -141,22 +138,22 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
                     Last revised: {new Date(ghinData.lastRevised).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </p>
                 )}
+                <p className="text-green-500 text-xs pt-1">
+                  Handicap will be updated when you save.
+                </p>
               </div>
             )}
 
-            {/* Manual handicap override */}
-            <div>
-              <label className="block text-green-400 text-xs font-semibold uppercase tracking-wide mb-1.5">
-                Handicap Index {ghinData ? '(synced ✓)' : '— enter manually'}
-              </label>
-              <input
-                value={handicap}
-                onChange={(e) => setHandicap(e.target.value)}
-                className="input"
-                placeholder="e.g. 12.4"
-                inputMode="decimal"
-              />
-            </div>
+            {!ghinData && user?.ghin_number && (
+              <div className="bg-green-900/20 border border-green-800/40 rounded-xl px-3 py-2">
+                <p className="text-green-500 text-xs">
+                  GHIN #{user.ghin_number} saved.
+                  {user.handicap != null
+                    ? ` Current handicap: ${user.handicap.toFixed(1)}.`
+                    : ' Tap Sync to fetch your handicap from GHIN.'}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Bio */}

@@ -83,9 +83,10 @@ export default function MemberProfilePage() {
                   </span>
                 )}
               </div>
-              {user.ghin_number && (
-                <p className="text-green-500 text-xs mt-1">GHIN #{user.ghin_number}</p>
-              )}
+              {user.ghin_number
+                ? <p className="text-green-500 text-xs mt-1">GHIN #{user.ghin_number}</p>
+                : <span className="inline-block mt-1 text-xs bg-red-900/40 border border-red-700/50 text-red-400 px-2 py-0.5 rounded-full">No GHIN</span>
+              }
             </div>
           </div>
 
