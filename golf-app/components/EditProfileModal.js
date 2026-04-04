@@ -24,13 +24,14 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        setGhinError(data.error || 'Could not find that GHIN number');
+        // API lookup failed (no token or API error) — still allow manual save
+        setGhinError('Could not auto-fetch from GHIN — enter your handicap manually below, then Save.');
         return;
       }
       setGhinData(data.golfer);
       setHandicap(data.golfer.handicapIndex?.toFixed(1) || '');
     } catch {
-      setGhinError('Network error — try again');
+      setGhinError('Network error — enter your handicap manually below, then Save.');
     } finally {
       setSyncing(false);
     }
@@ -80,14 +81,14 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
                 GHIN Number
               </label>
               <p className="text-green-500 text-xs mb-2">
-                Find this in The Grint → Profile → GHIN #
+                Find this on your USGA handicap card or in The Grint → Profile → GHIN #
               </p>
               <div className="flex gap-2">
                 <input
                   value={ghin}
                   onChange={(e) => { setGhin(e.target.value); setGhinData(null); setGhinError(''); }}
                   className="input flex-1"
-                  placeholder="e.g. 1234567"
+                  placeholder="e.g. 10210936"
                   inputMode="numeric"
                 />
                 <button
@@ -106,12 +107,15 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
                   ) : 'Sync'}
                 </button>
               </div>
+              <p className="text-green-600 text-xs mt-1.5">
+                Sync auto-fills your handicap. Or skip it — just enter your number and save.
+              </p>
             </div>
 
-            {/* Error */}
+            {/* Error — non-blocking, shows hint to enter manually */}
             {ghinError && (
-              <div className="bg-red-900/40 border border-red-700/50 rounded-xl px-3 py-2">
-                <p className="text-red-300 text-sm">{ghinError}</p>
+              <div className="bg-amber-900/30 border border-amber-700/40 rounded-xl px-3 py-2">
+                <p className="text-amber-300 text-sm">{ghinError}</p>
               </div>
             )}
 
@@ -143,7 +147,7 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
             {/* Manual handicap override */}
             <div>
               <label className="block text-green-400 text-xs font-semibold uppercase tracking-wide mb-1.5">
-                Handicap Index {ghinData ? '(synced from GHIN)' : '(manual)'}
+                Handicap Index {ghinData ? '(synced ✓)' : '— enter manually'}
               </label>
               <input
                 value={handicap}
