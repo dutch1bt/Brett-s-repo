@@ -49,6 +49,15 @@ const navItems = [
       </svg>
     ),
   },
+  {
+    href: '/profile',
+    label: 'Profile',
+    icon: (active) => (
+      <svg viewBox="0 0 24 24" fill={active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} className="w-6 h-6">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+      </svg>
+    ),
+  },
 ];
 
 export default function BottomNav() {
@@ -59,22 +68,19 @@ export default function BottomNav() {
          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
       <div className="flex items-stretch max-w-lg mx-auto">
         {navItems.map((item) => {
-          const active = pathname.startsWith(item.href);
+          const active = pathname === item.href || (item.href !== '/profile' && pathname.startsWith(item.href));
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors duration-150 ${
+              className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors duration-150 ${
                 active ? 'text-green-400' : 'text-green-600 hover:text-green-400'
               }`}
             >
               {item.icon(active)}
-              <span className={`text-[10px] font-medium ${active ? 'text-green-400' : 'text-green-600'}`}>
+              <span className={`text-[9px] font-medium ${active ? 'text-green-400' : 'text-green-600'}`}>
                 {item.label}
               </span>
-              {active && (
-                <span className="absolute bottom-0 w-8 h-0.5 bg-green-400 rounded-full" />
-              )}
             </Link>
           );
         })}
