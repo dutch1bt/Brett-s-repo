@@ -1,14 +1,49 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
+import Avatar from '@/components/Avatar';
+
+function resizeImageToDataUrl(file, maxSize = 256) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const ratio = Math.min(maxSize / img.width, maxSize / img.height, 1);
+      canvas.width = Math.round(img.width * ratio);
+      canvas.height = Math.round(img.height * ratio);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
 
 export default function EditProfileModal({ user, onClose, onSaved }) {
   const [bio, setBio] = useState(user?.bio || '');
   const [ghin, setGhin] = useState(user?.ghin_number || '');
+  const [avatarPreview, setAvatarPreview] = useState(user?.avatar_url || null);
+  const [avatarData, setAvatarData] = useState(null); // new image data to save
   const [ghinData, setGhinData] = useState(null);
   const [ghinError, setGhinError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
+
+  async function handleAvatarFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageToDataUrl(file, 256);
+      setAvatarPreview(dataUrl);
+      setAvatarData(dataUrl);
+    } catch {
+      // ignore
+    }
+  }
 
   async function syncGHIN() {
     if (!ghin.trim()) return;
@@ -38,10 +73,8 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
     setSaving(true);
     try {
       const body = { bio, ghin_number: ghin.trim() };
-      // Only update handicap if we got a confirmed GHIN sync
-      if (ghinData?.handicapIndex != null) {
-        body.handicap = ghinData.handicapIndex;
-      }
+      if (ghinData?.handicapIndex != null) body.handicap = ghinData.handicapIndex;
+      if (avatarData) body.avatar_url = avatarData;
       const res = await fetch('/api/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -70,6 +103,41 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
         </div>
 
         <div className="space-y-5 overflow-y-auto max-h-[70vh]">
+
+          {/* Avatar upload */}
+          <div className="flex items-center gap-4">
+            <div className="relative flex-shrink-0">
+              <Avatar name={user?.name} avatarUrl={avatarPreview} size="xl" />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="absolute bottom-0 right-0 w-8 h-8 bg-green-600 hover:bg-green-500 rounded-full flex items-center justify-center shadow-lg transition-colors"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-4 h-4 text-white">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z" />
+                </svg>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleAvatarFile}
+              />
+            </div>
+            <div>
+              <p className="text-white font-semibold text-sm">{user?.name}</p>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="text-green-400 text-xs mt-1 hover:text-green-300"
+              >
+                {avatarPreview ? 'Change photo' : 'Upload photo'}
+              </button>
+              {avatarData && (
+                <p className="text-green-600 text-xs mt-0.5">New photo ready — tap Save to apply</p>
+              )}
+            </div>
+          </div>
 
           {/* GHIN Section */}
           <div className="card-gold p-4 space-y-3">

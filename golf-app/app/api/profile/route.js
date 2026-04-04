@@ -55,24 +55,20 @@ export async function PATCH(request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { bio, ghin_number, handicap } = await request.json();
+  const { bio, ghin_number, handicap, avatar_url } = await request.json();
 
   const db = getDb();
-  // Only update handicap if a confirmed GHIN sync value is passed — no manual overrides
-  if (handicap != null) {
-    db.prepare('UPDATE users SET bio = ?, ghin_number = ?, handicap = ? WHERE id = ?').run(
-      bio || '',
-      ghin_number || null,
-      handicap,
-      session.userId
-    );
-  } else {
-    db.prepare('UPDATE users SET bio = ?, ghin_number = ? WHERE id = ?').run(
-      bio || '',
-      ghin_number || null,
-      session.userId
-    );
-  }
+  let sql = 'UPDATE users SET bio = ?, ghin_number = ?';
+  const params = [bio || '', ghin_number || null];
+
+  // Only update handicap from confirmed GHIN sync — no manual overrides
+  if (handicap != null) { sql += ', handicap = ?'; params.push(handicap); }
+  // Avatar stored as data URL (client-resized to 256×256 JPEG)
+  if (avatar_url != null) { sql += ', avatar_url = ?'; params.push(avatar_url); }
+
+  sql += ' WHERE id = ?';
+  params.push(session.userId);
+  db.prepare(sql).run(...params);
 
   const user = db
     .prepare('SELECT id, name, email, role, ghin_number, handicap, avatar_url, bio FROM users WHERE id = ?')
