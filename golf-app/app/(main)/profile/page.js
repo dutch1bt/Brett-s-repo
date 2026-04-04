@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Avatar from '@/components/Avatar';
 import EditProfileModal from '@/components/EditProfileModal';
+import PostRoundModal from '@/components/PostRoundModal';
 
 const MEDAL_EMOJIS = ['🥇', '🥈', '🥉'];
 
@@ -13,6 +14,9 @@ export default function ProfilePage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [postingRound, setPostingRound] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const [tab, setTab] = useState('stats');
   const [members, setMembers] = useState([]);
 
@@ -26,6 +30,22 @@ export default function ProfilePage() {
       setLoading(false);
     });
   }, []);
+
+  async function syncRounds() {
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const res = await fetch('/api/ghin/sync', { method: 'POST' });
+      const data = await res.json();
+      if (data.error) { setSyncMsg(data.error); }
+      else if (data.synced === 0) { setSyncMsg('No new rounds found'); }
+      else { setSyncMsg(`${data.synced} new round${data.synced !== 1 ? 's' : ''} added to your feed!`); }
+    } catch {
+      setSyncMsg('Sync failed — try again');
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -53,13 +73,30 @@ export default function ProfilePage() {
         <div className="px-4 pt-4" style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top, 0px))' }}>
           <div className="flex items-start justify-between">
             <Avatar name={user?.name} avatarUrl={user?.avatar_url} size="xl" />
-            <div className="flex gap-2">
-              <button onClick={() => setEditing(true)}
-                      className="btn-secondary text-xs px-3 py-2">Edit Profile</button>
-              <button onClick={logout}
-                      className="bg-red-900/40 border border-red-800/50 text-red-400 hover:bg-red-900/60 text-xs px-3 py-2 rounded-xl font-medium">
-                Logout
-              </button>
+            <div className="flex flex-col gap-2 items-end">
+              <div className="flex gap-2">
+                <button onClick={() => setEditing(true)}
+                        className="btn-secondary text-xs px-3 py-2">Edit Profile</button>
+                <button onClick={logout}
+                        className="bg-red-900/40 border border-red-800/50 text-red-400 hover:bg-red-900/60 text-xs px-3 py-2 rounded-xl font-medium">
+                  Logout
+                </button>
+              </div>
+              {user?.ghin_number && (
+                <div className="flex gap-2">
+                  <button onClick={() => setPostingRound(true)}
+                          className="bg-amber-600/20 border border-amber-500/40 text-amber-400 hover:bg-amber-600/30 text-xs px-3 py-2 rounded-xl font-medium whitespace-nowrap">
+                    ⛳ Post Round
+                  </button>
+                  <button onClick={syncRounds} disabled={syncing}
+                          className="bg-green-700/30 border border-green-600/40 text-green-400 hover:bg-green-700/50 text-xs px-3 py-2 rounded-xl font-medium disabled:opacity-50 whitespace-nowrap">
+                    {syncing ? '…' : '↻ Sync GHIN'}
+                  </button>
+                </div>
+              )}
+              {syncMsg && (
+                <p className="text-xs text-green-400 text-right max-w-[180px]">{syncMsg}</p>
+              )}
             </div>
           </div>
 
@@ -225,6 +262,19 @@ export default function ProfilePage() {
           onSaved={(updatedUser) => {
             setData((prev) => ({ ...prev, user: updatedUser }));
             setEditing(false);
+          }}
+        />
+      )}
+
+      {/* Post Round Modal */}
+      {postingRound && (
+        <PostRoundModal
+          user={user}
+          onClose={() => setPostingRound(false)}
+          onPosted={() => {
+            setPostingRound(false);
+            // Reload posts tab data
+            fetch('/api/profile').then((r) => r.json()).then((d) => setData(d));
           }}
         />
       )}

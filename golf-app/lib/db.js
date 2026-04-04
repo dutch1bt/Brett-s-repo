@@ -117,5 +117,15 @@ function initSchema(db) {
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Tracks GHIN rounds that have been synced to the feed
+    CREATE TABLE IF NOT EXISTS ghin_synced_rounds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ghin_score_id TEXT NOT NULL,
+      post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+      synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, ghin_score_id)
+    );
   `);
 }
