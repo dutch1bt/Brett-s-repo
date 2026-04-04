@@ -34,7 +34,7 @@ export async function POST(request) {
 
   const golfer = await lookupGolfer(ghin_number);
   if (!golfer) {
-    return NextResponse.json({ error: 'GHIN number not found — double-check it in The Grint app' }, { status: 404 });
+    return NextResponse.json({ error: 'GHIN number not found — double-check it at ghin.com' }, { status: 404 });
   }
 
   const db = getDb();

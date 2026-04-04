@@ -81,7 +81,7 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
                 GHIN Number
               </label>
               <p className="text-green-500 text-xs mb-2">
-                Find this on your USGA handicap card or in The Grint → Profile → GHIN #
+                Find this on your USGA handicap card or at ghin.com
               </p>
               <div className="flex gap-2">
                 <input
