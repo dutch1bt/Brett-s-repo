@@ -2,10 +2,13 @@
   "name": "pickem-app",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
-    "start": "next start -p 3001",
+    "start": "node scripts/start.js",
     "seed": "node lib/seed.js"
   },
   "dependencies": {
