@@ -1,0 +1,12 @@
+{
+  "$schema": "https://railway.app/railway-schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "node --experimental-sqlite --max-old-space-size=512 node_modules/.bin/next build"
+  },
+  "deploy": {
+    "startCommand": "node --experimental-sqlite scripts/start.js",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
