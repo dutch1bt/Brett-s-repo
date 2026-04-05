@@ -9,6 +9,83 @@ import PostRoundModal from '@/components/PostRoundModal';
 
 const MEDAL_EMOJIS = ['🥇', '🥈', '🥉'];
 
+function AdminPanel({ members }) {
+  const [resetTarget, setResetTarget] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [msg, setMsg] = useState('');
+  const [working, setWorking] = useState(false);
+  const [inviteCode] = useState(typeof window !== 'undefined'
+    ? `${window.location.origin}/register?code=sandbaggers` : '');
+
+  async function resetPassword() {
+    if (!newPassword || newPassword.length < 6) { setMsg('Min 6 characters'); return; }
+    setWorking(true); setMsg('');
+    const res = await fetch('/api/admin/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: resetTarget.id, new_password: newPassword }),
+    });
+    const data = await res.json();
+    setMsg(data.message || data.error);
+    setWorking(false);
+    if (res.ok) { setResetTarget(null); setNewPassword(''); }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Invite link */}
+      <div className="card p-4 space-y-2">
+        <h2 className="text-white font-bold text-sm">Invite Link</h2>
+        <p className="text-green-500 text-xs">Share this link with new members. They create their own account.</p>
+        <div className="flex gap-2">
+          <input readOnly value={inviteCode}
+                 className="input flex-1 text-xs text-green-300 bg-green-900/30" />
+          <button onClick={() => navigator.clipboard?.writeText(inviteCode).then(() => setMsg('Copied!'))}
+                  className="btn-secondary text-xs px-3">Copy</button>
+        </div>
+        {msg && <p className="text-green-400 text-xs">{msg}</p>}
+      </div>
+
+      {/* Member list with password reset */}
+      <div className="card overflow-hidden">
+        <div className="px-4 py-3 border-b border-green-800/50">
+          <h2 className="text-white font-bold text-sm">Members ({members.length})</h2>
+        </div>
+        <div className="divide-y divide-green-800/30">
+          {members.map((m) => (
+            <div key={m.id} className="px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white text-sm font-semibold">{m.name}</p>
+                  {!m.ghin_number && (
+                    <span className="text-[10px] bg-red-900/30 border border-red-700/40 text-red-400 px-1.5 py-0.5 rounded-full">No GHIN</span>
+                  )}
+                </div>
+                <button onClick={() => { setResetTarget(m); setNewPassword(''); setMsg(''); }}
+                        className="text-xs text-green-500 hover:text-green-300 border border-green-800/50 px-2 py-1 rounded-lg">
+                  Reset PW
+                </button>
+              </div>
+              {resetTarget?.id === m.id && (
+                <div className="mt-2 flex gap-2">
+                  <input type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
+                         placeholder="New password (min 6)" className="input flex-1 text-sm" />
+                  <button onClick={resetPassword} disabled={working}
+                          className="btn-primary text-xs px-3 py-2 flex-shrink-0">
+                    {working ? '…' : 'Set'}
+                  </button>
+                  <button onClick={() => setResetTarget(null)}
+                          className="text-green-600 text-xs px-2">Cancel</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ProfilePage() {
   const router = useRouter();
   const [data, setData] = useState(null);
@@ -160,7 +237,7 @@ export default function ProfilePage() {
 
       {/* Tabs */}
       <div className="flex border-b border-green-800/50 bg-green-950/50">
-        {['stats', 'results', 'posts'].map((t) => (
+        {[...['stats', 'results', 'posts'], ...(user?.role === 'admin' ? ['admin'] : [])].map((t) => (
           <button key={t} onClick={() => setTab(t)}
                   className={`flex-1 py-3 text-sm font-semibold transition-colors ${
                     tab === t ? 'text-green-400 border-b-2 border-green-400' : 'text-green-600 hover:text-green-400'
@@ -279,6 +356,10 @@ export default function ProfilePage() {
               </div>
             ))}
           </div>
+        )}
+        {/* Admin tab */}
+        {tab === 'admin' && user?.role === 'admin' && (
+          <AdminPanel members={members} />
         )}
       </div>
 
