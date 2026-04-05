@@ -9,13 +9,14 @@ import PostRoundModal from '@/components/PostRoundModal';
 
 const MEDAL_EMOJIS = ['🥇', '🥈', '🥉'];
 
-function AdminPanel({ members }) {
+function AdminPanel({ members: initialMembers, currentUserId }) {
+  const [members, setMembers] = useState(initialMembers);
   const [resetTarget, setResetTarget] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [msg, setMsg] = useState('');
   const [working, setWorking] = useState(false);
-  const [inviteCode] = useState(typeof window !== 'undefined'
-    ? `${window.location.origin}/register?code=sandbaggers` : '');
+  const memberInvite = typeof window !== 'undefined' ? `${window.location.origin}/register?code=sandbaggers` : '';
+  const adminInvite  = typeof window !== 'undefined' ? `${window.location.origin}/register?code=co-admin` : '';
 
   async function resetPassword() {
     if (!newPassword || newPassword.length < 6) { setMsg('Min 6 characters'); return; }
@@ -31,22 +32,53 @@ function AdminPanel({ members }) {
     if (res.ok) { setResetTarget(null); setNewPassword(''); }
   }
 
+  async function setRole(member, role) {
+    setWorking(true); setMsg('');
+    const res = await fetch('/api/admin/set-role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: member.id, role }),
+    });
+    const data = await res.json();
+    setMsg(data.message || data.error);
+    setWorking(false);
+    if (res.ok) {
+      setMembers((prev) => prev.map((m) => m.id === member.id ? { ...m, role } : m));
+    }
+  }
+
   return (
     <div className="space-y-4">
-      {/* Invite link */}
-      <div className="card p-4 space-y-2">
-        <h2 className="text-white font-bold text-sm">Invite Link</h2>
-        <p className="text-green-500 text-xs">Share this link with new members. They create their own account.</p>
-        <div className="flex gap-2">
-          <input readOnly value={inviteCode}
-                 className="input flex-1 text-xs text-green-300 bg-green-900/30" />
-          <button onClick={() => navigator.clipboard?.writeText(inviteCode).then(() => setMsg('Copied!'))}
-                  className="btn-secondary text-xs px-3">Copy</button>
+      {/* Invite links */}
+      <div className="card p-4 space-y-4">
+        <h2 className="text-white font-bold text-sm">Invite Links</h2>
+
+        <div className="space-y-1">
+          <p className="text-green-400 text-xs font-semibold uppercase tracking-wide">Member Invite</p>
+          <p className="text-green-600 text-xs mb-1.5">For regular members — standard access</p>
+          <div className="flex gap-2">
+            <input readOnly value={memberInvite}
+                   className="input flex-1 text-xs text-green-300 bg-green-900/30" />
+            <button onClick={() => navigator.clipboard?.writeText(memberInvite).then(() => setMsg('Member link copied!'))}
+                    className="btn-secondary text-xs px-3 flex-shrink-0">Copy</button>
+          </div>
         </div>
+
+        <div className="space-y-1">
+          <p className="text-amber-400 text-xs font-semibold uppercase tracking-wide">Co-Admin Invite</p>
+          <p className="text-green-600 text-xs mb-1.5">Grants full admin access — only share with your co-commissioner</p>
+          <div className="flex gap-2">
+            <input readOnly value={adminInvite}
+                   className="input flex-1 text-xs text-amber-300 bg-amber-900/10 border-amber-800/30" />
+            <button onClick={() => navigator.clipboard?.writeText(adminInvite).then(() => setMsg('Admin link copied!'))}
+                    className="bg-amber-600/20 border border-amber-500/40 text-amber-400 hover:bg-amber-600/30 text-xs px-3 py-2 rounded-xl font-medium flex-shrink-0">Copy</button>
+          </div>
+        </div>
+
         {msg && <p className="text-green-400 text-xs">{msg}</p>}
       </div>
 
-      {/* Member list with password reset */}
+      {/* Member list with role + password controls */}
       <div className="card overflow-hidden">
         <div className="px-4 py-3 border-b border-green-800/50">
           <h2 className="text-white font-bold text-sm">Members ({members.length})</h2>
@@ -54,17 +86,37 @@ function AdminPanel({ members }) {
         <div className="divide-y divide-green-800/30">
           {members.map((m) => (
             <div key={m.id} className="px-4 py-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white text-sm font-semibold">{m.name}</p>
-                  {!m.ghin_number && (
-                    <span className="text-[10px] bg-red-900/30 border border-red-700/40 text-red-400 px-1.5 py-0.5 rounded-full">No GHIN</span>
-                  )}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-white text-sm font-semibold">{m.name}</p>
+                    {m.role === 'admin' && (
+                      <span className="text-[10px] bg-amber-900/30 border border-amber-700/40 text-amber-400 px-1.5 py-0.5 rounded-full">Admin</span>
+                    )}
+                    {!m.ghin_number && (
+                      <span className="text-[10px] bg-red-900/30 border border-red-700/40 text-red-400 px-1.5 py-0.5 rounded-full">No GHIN</span>
+                    )}
+                  </div>
                 </div>
-                <button onClick={() => { setResetTarget(m); setNewPassword(''); setMsg(''); }}
-                        className="text-xs text-green-500 hover:text-green-300 border border-green-800/50 px-2 py-1 rounded-lg">
-                  Reset PW
-                </button>
+                <div className="flex gap-1.5 flex-shrink-0">
+                  {m.id !== currentUserId && (
+                    <button
+                      onClick={() => setRole(m, m.role === 'admin' ? 'member' : 'admin')}
+                      disabled={working}
+                      className={`text-xs px-2 py-1 rounded-lg border transition-colors ${
+                        m.role === 'admin'
+                          ? 'text-amber-500 border-amber-800/50 hover:text-red-400'
+                          : 'text-amber-400 border-amber-800/50 hover:bg-amber-900/20'
+                      }`}
+                    >
+                      {m.role === 'admin' ? 'Demote' : 'Make Admin'}
+                    </button>
+                  )}
+                  <button onClick={() => { setResetTarget(m); setNewPassword(''); setMsg(''); }}
+                          className="text-xs text-green-500 hover:text-green-300 border border-green-800/50 px-2 py-1 rounded-lg">
+                    Reset PW
+                  </button>
+                </div>
               </div>
               {resetTarget?.id === m.id && (
                 <div className="mt-2 flex gap-2">
@@ -359,7 +411,7 @@ export default function ProfilePage() {
         )}
         {/* Admin tab */}
         {tab === 'admin' && user?.role === 'admin' && (
-          <AdminPanel members={members} />
+          <AdminPanel members={members} currentUserId={user.id} />
         )}
       </div>
 

@@ -7,9 +7,17 @@ export async function POST(request) {
   try {
     const { name, email, password, invite_code } = await request.json();
 
-    // Validate invite code
-    const validCode = process.env.INVITE_CODE || 'sandbaggers';
-    if (!invite_code || invite_code.trim().toLowerCase() !== validCode.toLowerCase()) {
+    // Validate invite code — admin code grants admin role, member code grants member role
+    const memberCode = process.env.INVITE_CODE || 'sandbaggers';
+    const adminCode  = process.env.ADMIN_INVITE_CODE || 'co-admin';
+
+    const provided = invite_code?.trim().toLowerCase();
+    let grantedRole = null;
+    if (adminCode && provided === adminCode.toLowerCase()) {
+      grantedRole = 'admin';
+    } else if (provided === memberCode.toLowerCase()) {
+      grantedRole = 'member';
+    } else {
       return NextResponse.json({ error: 'Invalid invite code — ask Brett for the link' }, { status: 403 });
     }
 
@@ -29,13 +37,13 @@ export async function POST(request) {
     const hash = bcrypt.hashSync(password, 10);
     const result = db
       .prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
-      .run(name.trim(), email.toLowerCase().trim(), hash, 'member');
+      .run(name.trim(), email.toLowerCase().trim(), hash, grantedRole);
 
     const userId = result.lastInsertRowid;
-    const token = await signToken({ userId, email: email.toLowerCase().trim(), name: name.trim(), role: 'member' });
+    const token = await signToken({ userId, email: email.toLowerCase().trim(), name: name.trim(), role: grantedRole });
 
     const response = NextResponse.json({
-      user: { id: userId, name: name.trim(), email: email.toLowerCase().trim(), role: 'member' },
+      user: { id: userId, name: name.trim(), email: email.toLowerCase().trim(), role: grantedRole },
     });
     setAuthCookie(response, token);
     return response;

@@ -9,7 +9,7 @@ export async function GET() {
   const db = getDb();
   const members = db.prepare(`
     SELECT
-      u.id, u.name, u.handicap, u.ghin_number, u.avatar_url, u.bio,
+      u.id, u.name, u.role, u.handicap, u.ghin_number, u.avatar_url, u.bio,
       COUNT(DISTINCT er.event_id) AS events_played,
       SUM(er.points) AS total_points,
       COUNT(CASE WHEN er.position = 1 THEN 1 END) AS wins,
