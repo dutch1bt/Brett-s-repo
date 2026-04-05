@@ -127,5 +127,70 @@ function initSchema(db) {
       synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(user_id, ghin_score_id)
     );
+
+    -- Pick'em pool (one active at a time — Masters, etc.)
+    CREATE TABLE IF NOT EXISTS pools (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      tournament TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      buy_in REAL DEFAULT 20,
+      status TEXT NOT NULL DEFAULT 'active',
+      draft_deadline TEXT,
+      venmo TEXT,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Golfer tiers for a pool (stored as JSON array)
+    CREATE TABLE IF NOT EXISTS pool_tiers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+      tier_number INTEGER NOT NULL,
+      golfers TEXT NOT NULL DEFAULT '[]',
+      UNIQUE(pool_id, tier_number)
+    );
+
+    -- Each participant entry (team)
+    CREATE TABLE IF NOT EXISTS pool_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+      team_name TEXT NOT NULL,
+      participant_name TEXT NOT NULL,
+      payment_status TEXT NOT NULL DEFAULT 'unpaid',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Each entry's 4 golfer picks (one per tier)
+    CREATE TABLE IF NOT EXISTS pool_picks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id INTEGER NOT NULL REFERENCES pool_entries(id) ON DELETE CASCADE,
+      tier_number INTEGER NOT NULL,
+      golfer_name TEXT NOT NULL,
+      UNIQUE(entry_id, tier_number)
+    );
+
+    -- Live golfer results (admin enters/updates these)
+    CREATE TABLE IF NOT EXISTS pool_golfer_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+      golfer_name TEXT NOT NULL,
+      position TEXT,
+      score TEXT,
+      made_cut INTEGER NOT NULL DEFAULT 1,
+      low_round INTEGER NOT NULL DEFAULT 0,
+      points REAL NOT NULL DEFAULT 0,
+      UNIQUE(pool_id, golfer_name)
+    );
+
+    -- Scoring rules per pool
+    CREATE TABLE IF NOT EXISTS pool_scoring_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      points REAL NOT NULL,
+      UNIQUE(pool_id, label)
+    );
   `);
 }
