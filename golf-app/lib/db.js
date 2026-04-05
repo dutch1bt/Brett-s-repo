@@ -128,6 +128,71 @@ function initSchema(db) {
       UNIQUE(user_id, ghin_score_id)
     );
 
+    -- Annual trip (one active at a time — previous years archived)
+    CREATE TABLE IF NOT EXISTS trips (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      location TEXT,
+      dates_text TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      hotel TEXT,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS trip_itinerary (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      day TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      time TEXT,
+      description TEXT NOT NULL,
+      location TEXT,
+      type TEXT DEFAULT 'activity'
+    );
+
+    CREATE TABLE IF NOT EXISTS trip_tee_times (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      day TEXT NOT NULL,
+      round_name TEXT NOT NULL,
+      course TEXT,
+      tee_time TEXT NOT NULL,
+      players TEXT NOT NULL DEFAULT '[]'
+    );
+
+    CREATE TABLE IF NOT EXISTS trip_rooms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      room_name TEXT NOT NULL,
+      player_name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS trip_players (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      handicap REAL,
+      hcp_80 REAL,
+      hcp_100 REAL,
+      hcp_9hole REAL,
+      team TEXT,
+      sort_order INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS trip_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      player_name TEXT NOT NULL,
+      item TEXT NOT NULL,
+      amount REAL,
+      paid INTEGER DEFAULT 0,
+      venmo_to TEXT,
+      UNIQUE(trip_id, player_name, item)
+    );
+
     -- Pick'em pool (one active at a time — Masters, etc.)
     CREATE TABLE IF NOT EXISTS pools (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
