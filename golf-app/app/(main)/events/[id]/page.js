@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import Avatar from '@/components/Avatar';
 
 function formatDate(dateStr) {
@@ -18,12 +19,27 @@ export default function EventDetailPage() {
   const router = useRouter();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [activating, setActivating] = useState(false);
 
   useEffect(() => {
     fetch(`/api/events/${id}`)
       .then((r) => r.json())
       .then((d) => { setData(d); setLoading(false); });
+    fetch('/api/auth/me').then((r) => r.json()).then((d) => setIsAdmin(d.user?.role === 'admin'));
   }, [id]);
+
+  async function toggleActive() {
+    setActivating(true);
+    await fetch('/api/admin/events/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: parseInt(id), active: !data.event.is_active }),
+    });
+    const d = await fetch(`/api/events/${id}`).then((r) => r.json());
+    setData(d);
+    setActivating(false);
+  }
 
   if (loading) {
     return (
@@ -75,6 +91,32 @@ export default function EventDetailPage() {
         )}
         {event.description && (
           <p className="mt-3 text-green-300 text-sm leading-relaxed">{event.description}</p>
+        )}
+
+        {/* Admin controls */}
+        {isAdmin && (
+          <div className="mt-4 flex items-center gap-2 flex-wrap">
+            <button onClick={toggleActive} disabled={activating}
+                    className={`text-xs font-semibold px-4 py-2 rounded-xl transition-colors ${
+                      event.is_active
+                        ? 'bg-red-900/40 border border-red-700/50 text-red-400 hover:bg-red-900/60'
+                        : 'bg-green-600 text-white hover:bg-green-500'
+                    }`}>
+              {activating ? '…' : event.is_active ? '⏹ Stop Live Scoring' : '▶ Start Live Scoring'}
+            </button>
+            {event.is_active && (
+              <Link href="/scoring"
+                    className="text-xs font-semibold px-4 py-2 rounded-xl bg-green-900/40 border border-green-600/40 text-green-300 hover:bg-green-900/60">
+                View Live →
+              </Link>
+            )}
+          </div>
+        )}
+        {event.is_active && (
+          <div className="mt-3 flex items-center gap-2">
+            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            <span className="text-red-400 text-xs font-semibold">LIVE SCORING ACTIVE</span>
+          </div>
         )}
       </div>
 

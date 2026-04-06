@@ -23,16 +23,41 @@ function formatDate(dateStr) {
   });
 }
 
+const BLANK_EVENT = { name: '', date: '', location: '', type: 'tournament', format: '', description: '' };
+
 export default function EventsPage() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState(BLANK_EVENT);
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    fetch('/api/events')
+  function loadEvents() {
+    return fetch('/api/events')
       .then((r) => r.json())
       .then((d) => { setEvents(d.events || []); setLoading(false); });
+  }
+
+  useEffect(() => {
+    loadEvents();
+    fetch('/api/auth/me').then((r) => r.json()).then((d) => setIsAdmin(d.user?.role === 'admin'));
   }, []);
+
+  async function createEvent() {
+    if (!form.name || !form.date || !form.location) return;
+    setSaving(true);
+    await fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    setSaving(false);
+    setShowCreate(false);
+    setForm(BLANK_EVENT);
+    loadEvents();
+  }
 
   const filtered = filter === 'all' ? events : events.filter((e) => e.type === filter);
 
@@ -64,6 +89,13 @@ export default function EventsPage() {
               <h1 className="text-lg font-bold text-white">Event History</h1>
               <p className="text-green-500 text-xs">All tournaments & results</p>
             </div>
+            <div className="flex items-center gap-2">
+              {isAdmin && (
+                <button onClick={() => setShowCreate(true)}
+                        className="bg-green-600 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:bg-green-500 transition-colors">
+                  + New Event
+                </button>
+              )}
             <Link href="/scoring"
                   className="flex items-center gap-1.5 bg-green-700/30 border border-green-600/40 text-green-300 text-xs font-semibold px-3 py-2 rounded-xl hover:bg-green-700/50 transition-colors">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
@@ -71,6 +103,7 @@ export default function EventsPage() {
               </svg>
               Live
             </Link>
+            </div>
           </div>
 
           {/* Filter tabs */}
@@ -164,6 +197,68 @@ export default function EventsPage() {
           ))
         )}
       </div>
+
+      {/* Create Event Modal */}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-end sm:items-center justify-center p-4"
+             onClick={(e) => e.target === e.currentTarget && setShowCreate(false)}>
+          <div className="bg-green-950 border border-green-800/50 rounded-2xl w-full max-w-sm p-5 space-y-4">
+            <h2 className="text-white font-bold text-lg">New Event</h2>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Event Name *</label>
+                <input className="input w-full" placeholder="e.g. Saturday Match Play" value={form.name}
+                       onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Date *</label>
+                <input type="date" className="input w-full" value={form.date}
+                       onChange={(e) => setForm({ ...form, date: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Location / Course *</label>
+                <input className="input w-full" placeholder="e.g. Heather Course, Boyne Highlands" value={form.location}
+                       onChange={(e) => setForm({ ...form, location: e.target.value })} />
+              </div>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Type</label>
+                  <select className="input w-full" value={form.type}
+                          onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                    <option value="tournament">Tournament</option>
+                    <option value="scramble">Scramble</option>
+                    <option value="trip">Trip</option>
+                    <option value="social">Social</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Format</label>
+                  <input className="input w-full" placeholder="e.g. Stroke Play" value={form.format}
+                         onChange={(e) => setForm({ ...form, format: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Description</label>
+                <textarea rows={2} className="input w-full resize-none" placeholder="Optional notes…"
+                          value={form.description}
+                          onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setShowCreate(false)}
+                      className="flex-1 py-2.5 rounded-xl border border-green-700/50 text-green-400 text-sm font-semibold">
+                Cancel
+              </button>
+              <button onClick={createEvent} disabled={saving || !form.name || !form.date || !form.location}
+                      className="flex-1 btn-primary">
+                {saving ? 'Creating…' : 'Create Event'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
