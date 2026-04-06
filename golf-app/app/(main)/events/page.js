@@ -26,7 +26,9 @@ function formatDate(dateStr) {
 const BLANK_EVENT = { name: '', date: '', location: '', type: 'tournament', format: '', description: '' };
 
 export default function EventsPage() {
+  // All hooks at the top — no hooks after this block
   const [events, setEvents] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [isAdmin, setIsAdmin] = useState(false);
@@ -43,6 +45,7 @@ export default function EventsPage() {
   useEffect(() => {
     loadEvents();
     fetch('/api/auth/me').then((r) => r.json()).then((d) => setIsAdmin(d.user?.role === 'admin'));
+    fetch('/api/members').then((r) => r.json()).then((d) => setLeaderboard(d.members || []));
   }, []);
 
   async function createEvent() {
@@ -61,7 +64,6 @@ export default function EventsPage() {
 
   const filtered = filter === 'all' ? events : events.filter((e) => e.type === filter);
 
-  // Group by year
   const grouped = {};
   for (const e of filtered) {
     const year = e.date.slice(0, 4);
@@ -69,15 +71,6 @@ export default function EventsPage() {
     grouped[year].push(e);
   }
   const years = Object.keys(grouped).sort((a, b) => b - a);
-
-  // Compute all-time leaderboard from events
-  const [leaderboard, setLeaderboard] = useState([]);
-  useEffect(() => {
-    // We'll fetch stats via members API
-    fetch('/api/members')
-      .then((r) => r.json())
-      .then((d) => setLeaderboard(d.members || []));
-  }, []);
 
   return (
     <div className="page-enter">
@@ -96,28 +89,23 @@ export default function EventsPage() {
                   + New Event
                 </button>
               )}
-            <Link href="/scoring"
-                  className="flex items-center gap-1.5 bg-green-700/30 border border-green-600/40 text-green-300 text-xs font-semibold px-3 py-2 rounded-xl hover:bg-green-700/50 transition-colors">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-              </svg>
-              Live
-            </Link>
+              <Link href="/scoring"
+                    className="flex items-center gap-1.5 bg-green-700/30 border border-green-600/40 text-green-300 text-xs font-semibold px-3 py-2 rounded-xl hover:bg-green-700/50 transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                </svg>
+                Live
+              </Link>
             </div>
           </div>
 
           {/* Filter tabs */}
           <div className="flex gap-2 mt-3 overflow-x-auto pb-1">
             {['all', 'tournament', 'scramble', 'trip'].map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors ${
-                  filter === f
-                    ? 'bg-green-600 text-white'
-                    : 'bg-green-900 text-green-400 hover:bg-green-800'
-                }`}
-              >
+              <button key={f} onClick={() => setFilter(f)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors ${
+                        filter === f ? 'bg-green-600 text-white' : 'bg-green-900 text-green-400 hover:bg-green-800'
+                      }`}>
                 {f === 'all' ? 'All Events' : f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
             ))}
@@ -125,7 +113,7 @@ export default function EventsPage() {
         </div>
       </div>
 
-      <div className="p-4 space-y-6">
+      <div className="p-4 space-y-6 pb-24">
         {/* All-time leaderboard */}
         {leaderboard.length > 0 && (
           <div className="card-gold p-4">
@@ -156,6 +144,16 @@ export default function EventsPage() {
               <div className="h-3 w-32 bg-green-800 rounded" />
             </div>
           ))
+        ) : years.length === 0 ? (
+          <div className="text-center py-16">
+            <div className="text-5xl mb-4">⛳</div>
+            <p className="text-green-500 font-medium">No events yet</p>
+            {isAdmin && (
+              <button onClick={() => setShowCreate(true)} className="btn-primary mt-4">
+                Create First Event
+              </button>
+            )}
+          </div>
         ) : (
           years.map((year) => (
             <div key={year}>
@@ -169,9 +167,16 @@ export default function EventsPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="font-bold text-white text-sm leading-tight">{event.name}</h3>
-                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${TYPE_COLORS[event.type]}`}>
-                              {event.format || event.type}
-                            </span>
+                            {event.is_active ? (
+                              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/40 border border-red-700/40 text-red-400 font-semibold">
+                                <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse inline-block" />
+                                LIVE
+                              </span>
+                            ) : (
+                              <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${TYPE_COLORS[event.type]}`}>
+                                {event.format || event.type}
+                              </span>
+                            )}
                           </div>
                           <p className="text-green-400 text-xs mt-1">{formatDate(event.date)}</p>
                           <p className="text-green-500 text-xs mt-0.5 flex items-center gap-1">
@@ -204,7 +209,6 @@ export default function EventsPage() {
              onClick={(e) => e.target === e.currentTarget && setShowCreate(false)}>
           <div className="bg-green-950 border border-green-800/50 rounded-2xl w-full max-w-sm p-5 space-y-4">
             <h2 className="text-white font-bold text-lg">New Event</h2>
-
             <div className="space-y-3">
               <div>
                 <label className="text-green-400 text-xs font-semibold uppercase block mb-1">Event Name *</label>
@@ -245,7 +249,6 @@ export default function EventsPage() {
                           onChange={(e) => setForm({ ...form, description: e.target.value })} />
               </div>
             </div>
-
             <div className="flex gap-2 pt-1">
               <button onClick={() => setShowCreate(false)}
                       className="flex-1 py-2.5 rounded-xl border border-green-700/50 text-green-400 text-sm font-semibold">
