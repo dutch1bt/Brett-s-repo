@@ -89,8 +89,8 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg mx-auto bg-green-950 rounded-t-3xl border-t border-green-800 p-5"
-           style={{ paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))' }}>
+      <div className="w-full max-w-lg mx-auto bg-green-950 rounded-t-3xl border-t border-green-800 p-5 overflow-y-auto"
+           style={{ maxHeight: 'calc(100vh - 80px)', paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))' }}>
 
         {/* Header */}
         <div className="flex items-center justify-between mb-5">

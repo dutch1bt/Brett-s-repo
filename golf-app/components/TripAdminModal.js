@@ -161,8 +161,8 @@ export default function TripAdminModal({ tripData, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex flex-col" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="flex flex-col flex-1 bg-green-950 overflow-hidden"
-           style={{ marginTop: 'env(safe-area-inset-top, 0px)' }}>
+      <div className="flex flex-col bg-green-950 overflow-hidden"
+           style={{ marginTop: 'env(safe-area-inset-top, 0px)', height: 'calc(100vh - env(safe-area-inset-top, 0px) - 80px)' }}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-green-800/50 bg-green-900/50 flex-shrink-0">

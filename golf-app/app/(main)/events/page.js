@@ -205,9 +205,10 @@ export default function EventsPage() {
 
       {/* Create Event Modal */}
       {showCreate && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-end sm:items-center justify-center p-4"
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
              onClick={(e) => e.target === e.currentTarget && setShowCreate(false)}>
-          <div className="bg-green-950 border border-green-800/50 rounded-2xl w-full max-w-sm p-5 space-y-4">
+          <div className="bg-green-950 border border-green-800/50 rounded-2xl w-full max-w-sm p-5 space-y-4 overflow-y-auto"
+               style={{ maxHeight: 'calc(100vh - 120px)' }}>
             <h2 className="text-white font-bold text-lg">New Event</h2>
             <div className="space-y-3">
               <div>
