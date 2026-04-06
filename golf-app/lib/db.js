@@ -17,6 +17,8 @@ export function getDb() {
     _db = new DatabaseSync(DB_PATH);
     _db.exec('PRAGMA journal_mode = WAL');
     _db.exec('PRAGMA foreign_keys = ON');
+    _db.exec('PRAGMA synchronous = NORMAL');
+    _db.exec('PRAGMA cache_size = -8000'); // 8MB page cache
     initSchema(_db);
   }
   return _db;
@@ -257,5 +259,25 @@ function initSchema(db) {
       points REAL NOT NULL,
       UNIQUE(pool_id, label)
     );
+  `);
+
+  // Indexes for frequently-queried columns
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_posts_created_at    ON posts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_posts_user_id       ON posts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_post_likes_post_id  ON post_likes(post_id);
+    CREATE INDEX IF NOT EXISTS idx_post_likes_user_id  ON post_likes(user_id);
+    CREATE INDEX IF NOT EXISTS idx_post_comments_post  ON post_comments(post_id);
+    CREATE INDEX IF NOT EXISTS idx_event_results_event ON event_results(event_id);
+    CREATE INDEX IF NOT EXISTS idx_event_results_user  ON event_results(user_id);
+    CREATE INDEX IF NOT EXISTS idx_live_scores_event   ON live_scores(event_id);
+    CREATE INDEX IF NOT EXISTS idx_trophies_winner     ON trophies(winner_id);
+    CREATE INDEX IF NOT EXISTS idx_ghin_synced_user    ON ghin_synced_rounds(user_id);
+    CREATE INDEX IF NOT EXISTS idx_trip_itinerary_trip ON trip_itinerary(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_trip_tee_times_trip ON trip_tee_times(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_trip_rooms_trip     ON trip_rooms(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_trip_players_trip   ON trip_players(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_trip_payments_trip  ON trip_payments(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_trips_status        ON trips(status);
   `);
 }
