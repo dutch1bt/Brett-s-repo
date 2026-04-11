@@ -29,6 +29,7 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
   const [avatarData, setAvatarData] = useState(null); // new image data to save
   const [ghinData, setGhinData] = useState(null);
   const [ghinError, setGhinError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
@@ -71,6 +72,7 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
 
   async function save() {
     setSaving(true);
+    setSaveError('');
     try {
       const body = { bio, ghin_number: ghin.trim() };
       if (ghinData?.handicapIndex != null) body.handicap = ghinData.handicapIndex;
@@ -81,7 +83,13 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (res.ok) onSaved(data.user);
+      if (res.ok) {
+        onSaved(data.user);
+      } else {
+        setSaveError(data.error || 'Save failed — try again');
+      }
+    } catch {
+      setSaveError('Network error — check your connection');
     } finally {
       setSaving(false);
     }
@@ -236,6 +244,11 @@ export default function EditProfileModal({ user, onClose, onSaved }) {
             />
           </div>
 
+          {saveError && (
+            <div className="px-4 py-3 rounded-xl bg-red-900/40 border border-red-700/50 text-red-300 text-sm">
+              {saveError}
+            </div>
+          )}
           <button onClick={save} disabled={saving} className="w-full btn-primary py-3.5 text-base">
             {saving ? 'Saving...' : 'Save Profile'}
           </button>
