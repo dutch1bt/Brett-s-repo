@@ -1,17 +1,21 @@
 """
 Automatic Sunday Tee Time Reserver
 
-Designed to be run by cron at the exact moment your club opens reservations
-(typically midnight or a set hour, exactly 2 weeks in advance).
+Designed to be run by cron slightly BEFORE the exact moment your club opens
+reservations (2 weeks in advance). Use --early-seconds to control how many
+seconds before the window opens to start the script (default: 45).
 
-Checks availability for the Sunday that is exactly 14 days from today,
-then books the first available slot. Logs every run to auto_reserve.log.
+The script pre-authenticates while waiting, then fires the booking request
+at the exact right second for maximum speed.
 
 Usage:
-    python auto_reserve.py [--dry-run]
+    python auto_reserve.py [--dry-run] [--early-seconds 45]
 
-    --dry-run  Check availability and log what would be booked, but don't
-               actually submit the reservation. Useful for testing.
+    --dry-run        Check availability and log what would be booked, but don't
+                     submit. Useful for testing.
+    --early-seconds  How many seconds before the window opens to start the
+                     script (default 45). Set your cron job this many seconds
+                     early and pass the same value here.
 
 Cron setup (see bottom of this file for instructions).
 """
@@ -20,6 +24,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -86,7 +91,31 @@ def first_available_slot(date: str, players: int) -> dict | None:
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run(dry_run: bool = False) -> int:
+def _wait_for_booking_window(early_seconds: int) -> None:
+    """
+    If the script was started `early_seconds` before the booking window opens,
+    sleep until exactly the right moment.
+
+    Cron fires at HH:MM:00. If early_seconds=45, set the cron job 45 seconds
+    early (HH:MM-1:15 or use `* * * * * sleep 15 && python ...`) and pass
+    --early-seconds 45. This function sleeps off the gap so that the booking
+    request hits the server right as the window opens.
+    """
+    if early_seconds <= 0:
+        return
+    now = datetime.now()
+    # Target = top of the current minute + (60 - early_seconds) seconds
+    # e.g. if early_seconds=45 and now is HH:MM:00, wake at HH:MM:15
+    seconds_into_minute = now.second + now.microsecond / 1_000_000
+    target_seconds = 60 - early_seconds
+    sleep_for = target_seconds - seconds_into_minute
+    if sleep_for > 0:
+        log.info("Waiting %.1fs for booking window to open...", sleep_for)
+        time.sleep(sleep_for)
+    log.info("Booking window open — proceeding at %s", datetime.now().strftime("%H:%M:%S.%f")[:-3])
+
+
+def run(dry_run: bool = False, early_seconds: int = 0) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
     Called directly by cron — exit code matters for monitoring.
@@ -107,17 +136,42 @@ def run(dry_run: bool = False) -> int:
 
     log.info("Target Sunday: %s", date)
 
-    # 2. Fetch the first available slot
-    slot = first_available_slot(date, PLAYERS)
-    if not slot:
+    # 2. Pre-authenticate while waiting for the booking window
+    #    (Playwright backend will log in during fetch; for the race we warm up here)
+    if early_seconds > 0 and golf_agent._USING_REAL_BACKEND:
+        log.info("Pre-authenticating %ds before booking window...", early_seconds)
+        try:
+            import lakeland_backend as _lb
+            from playwright.sync_api import sync_playwright
+            _pw = sync_playwright().start()
+            _browser = _pw.chromium.launch(headless=True)
+            _page = _browser.new_page()
+            _lb._login(_page)
+            log.info("Pre-auth complete.")
+            _wait_for_booking_window(early_seconds)
+            # Now fetch from the already-logged-in page directly
+            _lb._open_booking_for(_page, date, PLAYERS)
+            slots = _lb._parse_slots(_page, PLAYERS)
+            _browser.close()
+            _pw.stop()
+        except Exception as exc:
+            log.warning("Pre-auth race failed (%s); falling back to normal flow.", exc)
+            _wait_for_booking_window(early_seconds)
+            slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
+    else:
+        _wait_for_booking_window(early_seconds)
+        slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
+
+    if not slots:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
+    slot = slots[0]
     log.info(
         "First available slot: %s — $%s/player, cart %s",
         slot["time"],
-        slot["price_per_player"],
-        "included" if slot["cart_included"] else "not included",
+        slot.get("price_per_player", "?"),
+        "included" if slot.get("cart_included") else "not included",
     )
 
     # 3. Book it (unless dry run)
@@ -146,9 +200,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Auto-reserve the first Sunday tee time 2 weeks out.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Check availability but do not submit the reservation.")
+    parser.add_argument("--early-seconds", type=int, default=0, metavar="N",
+                        help="Start N seconds before the booking window opens (default 0). "
+                             "Set your cron job N seconds early and pass this flag.")
     args = parser.parse_args()
 
-    sys.exit(run(dry_run=args.dry_run))
+    sys.exit(run(dry_run=args.dry_run, early_seconds=args.early_seconds))
 
 
 if __name__ == "__main__":
@@ -159,8 +216,9 @@ if __name__ == "__main__":
 # CRON SETUP
 # ---------------------------------------------------------------------------
 #
-# Your club opens reservations at a fixed time exactly 14 days in advance.
-# You need cron to fire this script at that exact minute, every Sunday.
+# Lakelands opens reservations exactly 2 weeks in advance on the minute.
+# You want this script to fire 45 seconds BEFORE that minute so it can
+# pre-authenticate, then hit the booking the instant the window opens.
 #
 # Step 1 — find your Python path:
 #   which python3
@@ -168,9 +226,16 @@ if __name__ == "__main__":
 # Step 2 — edit your crontab:
 #   crontab -e
 #
-# Step 3 — add a line using this template:
+# Step 3 — add this line (adjust HOUR/MINUTE to 45s before your club's opening time).
 #
-#   MINUTE HOUR * * 0 /path/to/python3 /path/to/auto_reserve.py >> /path/to/auto_reserve.log 2>&1
+# Example: club opens at 7:00 AM → start at 6:59:15 → cron at 6:59, --early-seconds 45
+#
+#   59 6 * * 0 /usr/bin/python3 /home/brett/golf/auto_reserve.py --early-seconds 45
+#
+# Or if the club opens at midnight (0:00):
+#
+#   59 23 * * 6 /usr/bin/python3 /home/brett/golf/auto_reserve.py --early-seconds 45
+#   (note: Saturday 23:59 fires 45s before Sunday midnight)
 #
 #   Field breakdown:
 #     MINUTE  — the exact minute the booking window opens (e.g. 0)
