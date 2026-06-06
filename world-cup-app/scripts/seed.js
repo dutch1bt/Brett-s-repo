@@ -1,7 +1,5 @@
-// Run with: node --experimental-sqlite scripts/seed.js
 // Seeds the database with World Cup 2026 teams and admin user
-
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
@@ -13,7 +11,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 // Delete existing DB so seed is idempotent
 if (fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
 
-const db = new DatabaseSync(DB_PATH);
+const db = new Database(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 

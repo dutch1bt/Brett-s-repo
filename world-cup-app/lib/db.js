@@ -1,5 +1,4 @@
-// Uses Node.js built-in SQLite (available in Node 22.5+) - no native compilation needed
-import { DatabaseSync } from 'node:sqlite';
+import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
@@ -14,7 +13,7 @@ let _db = null;
 
 export function getDb() {
   if (!_db) {
-    _db = new DatabaseSync(DB_PATH);
+    _db = new Database(DB_PATH);
     _db.exec('PRAGMA journal_mode = WAL');
     _db.exec('PRAGMA foreign_keys = ON');
     initSchema(_db);
