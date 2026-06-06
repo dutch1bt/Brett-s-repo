@@ -150,7 +150,7 @@ export default function PicksPage() {
 
       {/* Teams by tier */}
       {PRICE_TIERS.map((tier) => {
-        const tierTeams = teams.filter((t) => t.price === tier.price && t.active);
+        const tierTeams = teams.filter((t) => t.price === tier.price);
         if (tierTeams.length === 0) return null;
         return (
           <div key={tier.price} className="mb-8">
