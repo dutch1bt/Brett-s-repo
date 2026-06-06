@@ -1,390 +1,603 @@
 'use client';
-import { useEffect, useState } from 'react';
+
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 
-const STAGE_LABELS = ['Group Stage', 'Round of 32', 'Round of 16', 'Quarterfinals', 'Semifinals', 'Final', 'Champion'];
-const TABS = ['Record Results', 'Teams', 'Participants', 'Settings'];
+const STAGE_LABELS = {
+  0: 'Group Stage',
+  1: 'Round of 32',
+  2: 'Round of 16',
+  3: 'Quarterfinals',
+  4: 'Semifinals',
+  5: 'Final',
+  6: 'Champion',
+};
 
-export default function AdminPage() {
-  const router = useRouter();
-  const [tab, setTab] = useState(0);
+const TABS = ['Record Results', 'Update Teams', 'Participants', 'Settings'];
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl shadow-2xl text-sm font-medium
+      ${toast.type === 'success' ? 'bg-green-700 text-white' : 'bg-red-700 text-white'}`}>
+      {toast.msg}
+    </div>
+  );
+}
+
+// Tab 1: Record Results
+function RecordResultsTab() {
   const [teams, setTeams] = useState([]);
   const [logs, setLogs] = useState([]);
-  const [participants, setParticipants] = useState([]);
-  const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
-  const [expandedUser, setExpandedUser] = useState(null);
+  const [working, setWorking] = useState(null);
 
-  useEffect(() => {
-    fetch('/api/auth/me').then(r => r.json()).then(data => {
-      if (!data?.user || data.user.role !== 'admin') {
-        router.push('/leaderboard');
-      }
-    });
-  }, [router]);
-
-  async function loadAll() {
-    const [teamsRes, logsRes, partRes, settRes] = await Promise.all([
-      fetch('/api/admin/teams').then(r => r.json()),
-      fetch('/api/admin/results').then(r => r.json()),
-      fetch('/api/admin/participants').then(r => r.json()),
-      fetch('/api/admin/settings').then(r => r.json()),
-    ]);
-    setTeams(teamsRes.teams || []);
-    setLogs(logsRes.logs || []);
-    setParticipants(partRes.participants || []);
-    setSettings(settRes.settings || {});
-    setLoading(false);
-  }
-
-  useEffect(() => { loadAll(); }, []);
-
-  function showToast(msg, ok = true) {
-    setToast({ msg, ok });
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
-  }
+  };
+
+  const load = useCallback(async () => {
+    const [teamsRes, logsRes] = await Promise.all([
+      fetch('/api/admin/teams'),
+      fetch('/api/admin/results'),
+    ]);
+    const [teamsData, logsData] = await Promise.all([teamsRes.json(), logsRes.json()]);
+    setTeams((teamsData.teams || []).filter((t) => t.active));
+    setLogs(logsData.logs || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   async function recordWin(teamId, winType) {
-    const res = await fetch('/api/admin/results', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId, winType }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      showToast(`${winType === 'group' ? '+1 Group Win' : '+2 Knockout Win'} recorded!`);
-      setTeams(prev => prev.map(t => t.id === teamId ? { ...data.team } : t));
-      const logsRes = await fetch('/api/admin/results').then(r => r.json());
-      setLogs(logsRes.logs || []);
-    } else {
-      showToast(data.error || 'Error', false);
+    setWorking(`${teamId}-${winType}`);
+    try {
+      const res = await fetch('/api/admin/results', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teamId, winType }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(`Win recorded for ${data.team.name}!`);
+        load();
+      } else {
+        showToast(data.error || 'Failed', 'error');
+      }
+    } catch {
+      showToast('Network error', 'error');
+    } finally {
+      setWorking(null);
     }
   }
 
   async function undoLog(logId) {
-    const res = await fetch('/api/admin/results/undo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ logId }),
-    });
-    if (res.ok) {
-      showToast('Undone!');
-      await loadAll();
-    } else {
-      showToast('Failed to undo', false);
+    try {
+      const res = await fetch('/api/admin/results/undo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logId }),
+      });
+      if (res.ok) {
+        showToast('Undone!');
+        load();
+      } else {
+        showToast('Undo failed', 'error');
+      }
+    } catch {
+      showToast('Network error', 'error');
     }
   }
 
-  async function updateTeam(id, updates) {
-    const res = await fetch('/api/admin/teams', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, ...updates }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      showToast('Team updated!');
-      setTeams(prev => prev.map(t => t.id === id ? { ...data.team } : t));
-    } else {
-      showToast(data.error || 'Error', false);
-    }
-  }
-
-  async function updateSettings(updates) {
-    const res = await fetch('/api/admin/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setSettings(data.settings || {});
-      showToast('Settings saved!');
-    } else {
-      showToast(data.error || 'Error', false);
-    }
-  }
-
-  if (loading) {
-    return <div className="flex items-center justify-center h-60 text-green-400 animate-pulse">Loading admin panel…</div>;
-  }
-
-  const picksLocked = settings.picks_locked === '1';
+  if (loading) return <div className="text-green-400 animate-pulse py-8 text-center">Loading teams...</div>;
 
   return (
-    <div className="page-enter">
-      {toast && (
-        <div className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl font-medium shadow-xl text-sm ${toast.ok ? 'bg-green-700' : 'bg-red-800'} text-white`}>
-          {toast.msg}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-white">Admin Panel</h1>
-        <div className={`px-3 py-1 rounded-full text-xs font-bold ${picksLocked ? 'bg-red-800 text-red-200' : 'bg-green-800 text-green-200'}`}>
-          Picks {picksLocked ? 'LOCKED' : 'OPEN'}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-slate-900/60 p-1 rounded-xl">
-        {TABS.map((t, i) => (
-          <button
-            key={t}
-            onClick={() => setTab(i)}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === i ? 'bg-green-700 text-white' : 'text-slate-400 hover:text-white'
+    <div>
+      <Toast toast={toast} />
+      <h2 className="text-lg font-semibold text-white mb-4">Record Match Results</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
+        {teams.map((team) => (
+          <div
+            key={team.id}
+            className={`bg-slate-900 border rounded-xl p-3 ${
+              team.eliminated ? 'border-red-900/40 opacity-60' : 'border-green-900/40'
             }`}
           >
-            {t}
-          </button>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-2xl">{team.flag}</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-white text-sm truncate">{team.name}</div>
+                <div className="text-xs text-slate-400">
+                  {STAGE_LABELS[team.stage_order] || 'Group Stage'} · {team.score} pts
+                  {team.eliminated ? ' · Eliminated' : ''}
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => recordWin(team.id, 'group')}
+                disabled={!!working || team.eliminated}
+                className="flex-1 text-xs font-semibold py-1.5 px-2 rounded-lg bg-blue-900/50 hover:bg-blue-800 text-blue-300 border border-blue-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {working === `${team.id}-group` ? '...' : 'Group Win +1'}
+              </button>
+              <button
+                onClick={() => recordWin(team.id, 'knockout')}
+                disabled={!!working || team.eliminated}
+                className="flex-1 text-xs font-semibold py-1.5 px-2 rounded-lg bg-green-900/50 hover:bg-green-800 text-green-300 border border-green-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {working === `${team.id}-knockout` ? '...' : 'KO Win +2'}
+              </button>
+            </div>
+          </div>
         ))}
       </div>
 
-      {/* Tab 0: Record Results */}
-      {tab === 0 && (
-        <div>
-          <p className="text-slate-400 text-sm mb-4">Click a win type to record a result and award points.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
-            {teams.filter(t => t.active).sort((a, b) => b.price - a.price || a.name.localeCompare(b.name)).map(team => (
-              <div key={team.id} className={`card p-4 flex items-center gap-3 ${team.eliminated ? 'opacity-50' : ''}`}>
-                <span className="text-3xl">{team.flag}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-white text-sm truncate">{team.name}</div>
-                  <div className="text-xs text-slate-400">
-                    {team.group_wins}G + {team.knockout_wins}KO = <span className="text-green-400 font-bold">{team.score} pts</span>
+      <div>
+        <h3 className="text-base font-semibold text-white mb-3">Recent Results (last 10)</h3>
+        {logs.length === 0 ? (
+          <p className="text-slate-500 text-sm">No results recorded yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {logs.slice(0, 10).map((log) => (
+              <div key={log.id} className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">{log.team_flag}</span>
+                  <div>
+                    <span className="text-sm text-white font-medium">{log.team_name}</span>
+                    <span className="ml-2 text-xs text-slate-400">
+                      {log.win_type === 'group' ? 'Group Win' : 'Knockout Win'} · +{log.points_awarded}pts
+                    </span>
                   </div>
-                  {team.stage_order > 0 && (
-                    <div className="text-xs text-slate-500">{STAGE_LABELS[team.stage_order]}</div>
-                  )}
                 </div>
-                <div className="flex flex-col gap-1.5">
-                  <button
-                    onClick={() => recordWin(team.id, 'group')}
-                    disabled={team.eliminated}
-                    className="px-2.5 py-1 bg-blue-800 hover:bg-blue-700 text-blue-100 rounded-lg text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    +1 Group
-                  </button>
-                  <button
-                    onClick={() => recordWin(team.id, 'knockout')}
-                    disabled={team.eliminated}
-                    className="px-2.5 py-1 bg-amber-800 hover:bg-amber-700 text-amber-100 rounded-lg text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    +2 K/O
-                  </button>
-                </div>
+                <button
+                  onClick={() => undoLog(log.id)}
+                  className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded bg-red-900/20 hover:bg-red-900/40 transition-colors"
+                >
+                  Undo
+                </button>
               </div>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
-          {/* Match log */}
-          <div className="card p-4">
-            <h3 className="font-semibold text-white mb-3">Recent Results</h3>
-            {logs.length === 0 ? (
-              <p className="text-slate-500 text-sm">No results recorded yet.</p>
-            ) : (
-              <div className="space-y-2 max-h-80 overflow-y-auto scroll-area">
-                {logs.map(log => (
-                  <div key={log.id} className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2 text-sm">
-                    <span className="flex items-center gap-2">
-                      <span>{log.team_flag}</span>
-                      <span className="text-white">{log.team_name}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${log.win_type === 'group' ? 'bg-blue-800 text-blue-200' : 'bg-amber-800 text-amber-200'}`}>
-                        {log.win_type === 'group' ? 'Group +1' : 'Knockout +2'}
-                      </span>
-                    </span>
-                    <button
-                      onClick={() => undoLog(log.id)}
-                      className="text-xs text-red-400 hover:text-red-300 ml-3 flex-shrink-0"
-                    >
-                      Undo
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+// Tab 2: Update Teams
+function UpdateTeamsTab() {
+  const [teams, setTeams] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [edits, setEdits] = useState({});
 
-      {/* Tab 1: Teams */}
-      {tab === 1 && (
-        <div className="card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-green-900/60">
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Team</th>
-                <th className="text-center px-2 py-3 text-slate-400 font-medium">Price</th>
-                <th className="text-center px-2 py-3 text-slate-400 font-medium">Stage</th>
-                <th className="text-center px-2 py-3 text-slate-400 font-medium">Elim</th>
-                <th className="text-center px-2 py-3 text-slate-400 font-medium">Active</th>
-              </tr>
-            </thead>
-            <tbody>
-              {teams.map(team => (
-                <tr key={team.id} className="border-b border-slate-800/50 hover:bg-slate-800/20">
-                  <td className="px-4 py-2">
-                    <span className="flex items-center gap-2">
-                      <span className="text-xl">{team.flag}</span>
-                      <span className="text-white font-medium">{team.name}</span>
-                      <span className="text-green-400 text-xs">{team.score}pts</span>
-                    </span>
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  useEffect(() => {
+    fetch('/api/admin/teams')
+      .then((r) => r.json())
+      .then((data) => {
+        setTeams(data.teams || []);
+        setLoading(false);
+      });
+  }, []);
+
+  function setEdit(teamId, field, value) {
+    setEdits((prev) => ({
+      ...prev,
+      [teamId]: { ...prev[teamId], [field]: value },
+    }));
+  }
+
+  function getVal(team, field) {
+    if (edits[team.id] && field in edits[team.id]) return edits[team.id][field];
+    return team[field];
+  }
+
+  async function saveTeam(team) {
+    setSaving(team.id);
+    try {
+      const changes = edits[team.id] || {};
+      const res = await fetch('/api/admin/teams', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: team.id, ...changes }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setTeams((prev) => prev.map((t) => (t.id === data.team.id ? data.team : t)));
+        setEdits((prev) => { const n = { ...prev }; delete n[team.id]; return n; });
+        showToast(`${team.name} updated!`);
+      } else {
+        showToast(data.error || 'Failed', 'error');
+      }
+    } catch {
+      showToast('Network error', 'error');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (loading) return <div className="text-green-400 animate-pulse py-8 text-center">Loading teams...</div>;
+
+  return (
+    <div>
+      <Toast toast={toast} />
+      <h2 className="text-lg font-semibold text-white mb-4">Update Teams</h2>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[600px]">
+          <thead>
+            <tr className="text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
+              <th className="text-left py-2 px-2">Team</th>
+              <th className="text-center py-2 px-2 w-16">Price</th>
+              <th className="text-center py-2 px-2 w-28">Stage</th>
+              <th className="text-center py-2 px-2 w-16">Elim.</th>
+              <th className="text-center py-2 px-2 w-16">Active</th>
+              <th className="py-2 px-2 w-16"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {teams.map((team) => {
+              const isDirty = !!edits[team.id] && Object.keys(edits[team.id]).length > 0;
+              return (
+                <tr key={team.id} className="border-b border-slate-800/50 hover:bg-slate-900/30">
+                  <td className="py-2 px-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{team.flag}</span>
+                      <div>
+                        <div className="font-medium text-white">{team.name}</div>
+                        <div className="text-xs text-slate-500">{team.confederation} · {team.score || 0}pts</div>
+                      </div>
+                    </div>
                   </td>
-                  <td className="px-2 py-2 text-center">
+                  <td className="py-2 px-2 text-center">
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={getVal(team, 'price')}
+                      onChange={(e) => setEdit(team.id, 'price', parseInt(e.target.value))}
+                      className="w-14 bg-slate-800 border border-slate-700 rounded-lg text-center text-white text-sm py-1"
+                    />
+                  </td>
+                  <td className="py-2 px-2 text-center">
                     <select
-                      value={team.price}
-                      onChange={(e) => updateTeam(team.id, { price: parseInt(e.target.value) })}
-                      className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white text-xs"
+                      value={getVal(team, 'stage_order')}
+                      onChange={(e) => setEdit(team.id, 'stage_order', parseInt(e.target.value))}
+                      className="bg-slate-800 border border-slate-700 rounded-lg text-white text-xs py-1 w-full"
                     >
-                      {[1,2,3,5,7].map(p => <option key={p} value={p}>${p}</option>)}
+                      {Object.entries(STAGE_LABELS).map(([val, label]) => (
+                        <option key={val} value={val}>{label}</option>
+                      ))}
                     </select>
                   </td>
-                  <td className="px-2 py-2 text-center">
-                    <select
-                      value={team.stage_order}
-                      onChange={(e) => updateTeam(team.id, { stage_order: parseInt(e.target.value) })}
-                      className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-white text-xs"
-                    >
-                      {STAGE_LABELS.map((label, i) => <option key={i} value={i}>{label}</option>)}
-                    </select>
-                  </td>
-                  <td className="px-2 py-2 text-center">
+                  <td className="py-2 px-2 text-center">
                     <input
                       type="checkbox"
-                      checked={!!team.eliminated}
-                      onChange={(e) => updateTeam(team.id, { eliminated: e.target.checked })}
+                      checked={!!getVal(team, 'eliminated')}
+                      onChange={(e) => setEdit(team.id, 'eliminated', e.target.checked)}
                       className="w-4 h-4 accent-red-500"
                     />
                   </td>
-                  <td className="px-2 py-2 text-center">
+                  <td className="py-2 px-2 text-center">
                     <input
                       type="checkbox"
-                      checked={!!team.active}
-                      onChange={(e) => updateTeam(team.id, { active: e.target.checked })}
+                      checked={!!getVal(team, 'active')}
+                      onChange={(e) => setEdit(team.id, 'active', e.target.checked)}
                       className="w-4 h-4 accent-green-500"
                     />
                   </td>
+                  <td className="py-2 px-2">
+                    <button
+                      onClick={() => saveTeam(team)}
+                      disabled={!isDirty || saving === team.id}
+                      className="text-xs px-2 py-1 rounded-lg bg-green-700 hover:bg-green-600 text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {saving === team.id ? '...' : 'Save'}
+                    </button>
+                  </td>
                 </tr>
-              ))}
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Tab 3: Participants
+function ParticipantsTab() {
+  const [participants, setParticipants] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/admin/participants')
+      .then((r) => r.json())
+      .then((data) => {
+        setParticipants(data.participants || []);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div className="text-green-400 animate-pulse py-8 text-center">Loading participants...</div>;
+
+  const members = participants.filter((p) => p.role !== 'admin');
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-white mb-4">
+        Participants ({members.length})
+      </h2>
+      {members.length === 0 ? (
+        <p className="text-slate-500 text-sm">No participants yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[500px]">
+            <thead>
+              <tr className="text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
+                <th className="text-left py-2 px-3">Name</th>
+                <th className="text-left py-2 px-3 hidden sm:table-cell">Email</th>
+                <th className="text-left py-2 px-3">Teams</th>
+                <th className="text-right py-2 px-3">Spend</th>
+                <th className="text-right py-2 px-3">Pts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...members]
+                .sort((a, b) => b.total_points - a.total_points || b.max_stage_order - a.max_stage_order)
+                .map((p, idx) => (
+                  <tr key={p.id} className="border-b border-slate-800/50 hover:bg-slate-900/30">
+                    <td className="py-2 px-3">
+                      <div className="font-medium text-white">{p.name}</div>
+                      <div className="text-xs text-slate-500">#{idx + 1}</div>
+                    </td>
+                    <td className="py-2 px-3 text-slate-400 text-xs hidden sm:table-cell">{p.email}</td>
+                    <td className="py-2 px-3">
+                      <div className="flex gap-0.5 flex-wrap">
+                        {p.teams.map((t) => (
+                          <span
+                            key={t.id}
+                            className={`text-base ${t.eliminated ? 'opacity-30' : ''}`}
+                            title={`${t.name} ($${t.price}) ${t.score}pts`}
+                          >
+                            {t.flag}
+                          </span>
+                        ))}
+                        {p.teams.length === 0 && <span className="text-slate-600 text-xs italic">No picks</span>}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-right text-slate-300 font-medium">${p.total_spend}</td>
+                    <td className="py-2 px-3 text-right font-bold text-green-400">{p.total_points}</td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Tab 2: Participants */}
-      {tab === 2 && (
-        <div className="space-y-3">
-          <p className="text-slate-400 text-sm">{participants.filter(p => p.role !== 'admin').length} participants registered.</p>
-          {participants.filter(p => p.role !== 'admin').map(user => (
-            <div key={user.id} className="card p-4 cursor-pointer hover:border-green-700" onClick={() => setExpandedUser(expandedUser === user.id ? null : user.id)}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-white">{user.name}</div>
-                  <div className="text-xs text-slate-400">{user.email}</div>
-                </div>
-                <div className="flex items-center gap-4 text-right">
-                  <div>
-                    <div className="text-xl font-bold text-green-400">{user.total_points}</div>
-                    <div className="text-xs text-slate-500">points</div>
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-white">${user.total_spend}</div>
-                    <div className="text-xs text-slate-500">spent</div>
-                  </div>
-                  <div className="flex gap-0.5">
-                    {user.teams.map(t => <span key={t.id} className={t.eliminated ? 'opacity-30' : ''} title={t.name}>{t.flag}</span>)}
-                  </div>
-                </div>
-              </div>
-              {expandedUser === user.id && user.teams.length > 0 && (
-                <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2 border-t border-slate-700 pt-4">
-                  {user.teams.map(t => (
-                    <div key={t.id} className={`flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2 text-xs ${t.eliminated ? 'opacity-40' : ''}`}>
-                      <span className="flex items-center gap-1.5">
-                        {t.flag}
-                        <span className={t.eliminated ? 'line-through text-slate-400' : 'text-white'}>{t.name}</span>
-                        <span className="text-slate-500">(${t.price})</span>
-                      </span>
-                      <span className="text-green-400 font-bold">{t.score}p</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {expandedUser === user.id && user.teams.length === 0 && (
-                <div className="mt-4 text-slate-500 text-sm text-center">No picks submitted yet</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+// Tab 4: Settings
+function SettingsTab() {
+  const [settings, setSettings] = useState({ picks_locked: '0', budget: '14', min_teams: '2', max_teams: '7' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
 
-      {/* Tab 3: Settings */}
-      {tab === 3 && (
-        <div className="max-w-md space-y-6">
-          {/* Lock picks */}
-          <div className="card p-6">
-            <h3 className="font-semibold text-white mb-1">Picks Lock</h3>
-            <p className="text-slate-400 text-sm mb-4">Lock picks when the tournament starts to prevent changes.</p>
-            <button
-              onClick={() => updateSettings({ picks_locked: picksLocked ? '0' : '1' })}
-              className={`w-full py-3 rounded-xl font-bold text-sm transition-colors ${
-                picksLocked
-                  ? 'bg-green-700 hover:bg-green-600 text-white'
-                  : 'bg-red-700 hover:bg-red-600 text-white'
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  useEffect(() => {
+    fetch('/api/admin/settings')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.settings) setSettings(data.settings);
+        setLoading(false);
+      });
+  }, []);
+
+  async function saveSettings() {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings(data.settings);
+        showToast('Settings saved!');
+      } else {
+        showToast(data.error || 'Failed', 'error');
+      }
+    } catch {
+      showToast('Network error', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleLock() {
+    const newLocked = settings.picks_locked === '1' ? '0' : '1';
+    setSaving(true);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ picks_locked: newLocked }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSettings(data.settings);
+        showToast(newLocked === '1' ? 'Picks locked!' : 'Picks unlocked!');
+      } else {
+        showToast('Failed', 'error');
+      }
+    } catch {
+      showToast('Network error', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <div className="text-green-400 animate-pulse py-8 text-center">Loading settings...</div>;
+
+  const isLocked = settings.picks_locked === '1';
+
+  return (
+    <div>
+      <Toast toast={toast} />
+      <h2 className="text-lg font-semibold text-white mb-6">Pool Settings</h2>
+
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 mb-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-white text-base">
+              {isLocked ? '🔒 Picks are Locked' : '🔓 Picks are Open'}
+            </h3>
+            <p className="text-sm text-slate-400 mt-1">
+              {isLocked
+                ? 'Users cannot change their picks. Unlock to allow changes.'
+                : 'Users can freely change their picks. Lock when the tournament starts.'}
+            </p>
+          </div>
+          <button
+            onClick={toggleLock}
+            disabled={saving}
+            className={`relative w-14 h-7 rounded-full transition-colors duration-200 focus:outline-none ${
+              isLocked ? 'bg-red-600' : 'bg-green-600'
+            } disabled:opacity-50`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform duration-200 ${
+                isLocked ? 'translate-x-7' : 'translate-x-0'
               }`}
-            >
-              {picksLocked ? '🔓 Unlock Picks' : '🔒 Lock Picks'}
-            </button>
-          </div>
+            />
+          </button>
+        </div>
+      </div>
 
-          {/* Budget & team count */}
-          <div className="card p-6 space-y-4">
-            <h3 className="font-semibold text-white mb-1">Pool Rules</h3>
-            <div>
-              <label className="block text-sm text-green-300 mb-1.5">Budget ($)</label>
-              <input
-                type="number"
-                defaultValue={settings.budget || '14'}
-                onBlur={(e) => updateSettings({ budget: e.target.value })}
-                className="input w-32"
-                min="1"
-                max="100"
-              />
-            </div>
-            <div className="flex gap-4">
-              <div>
-                <label className="block text-sm text-green-300 mb-1.5">Min Teams</label>
-                <input
-                  type="number"
-                  defaultValue={settings.min_teams || '2'}
-                  onBlur={(e) => updateSettings({ min_teams: e.target.value })}
-                  className="input w-24"
-                  min="1" max="10"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-green-300 mb-1.5">Max Teams</label>
-                <input
-                  type="number"
-                  defaultValue={settings.max_teams || '7'}
-                  onBlur={(e) => updateSettings({ max_teams: e.target.value })}
-                  className="input w-24"
-                  min="1" max="10"
-                />
-              </div>
-            </div>
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 space-y-4">
+        <h3 className="font-semibold text-white">Budget &amp; Team Rules</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm text-green-300 mb-1.5">Budget ($)</label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={settings.budget}
+              onChange={(e) => setSettings((s) => ({ ...s, budget: e.target.value }))}
+              className="input"
+            />
           </div>
-
-          {/* Admin credentials reminder */}
-          <div className="card p-4 border-amber-800/40">
-            <h3 className="font-semibold text-amber-300 text-sm mb-2">Admin Account</h3>
-            <p className="text-slate-400 text-xs">Default login: <span className="text-white">admin@worldcup.app</span> / <span className="text-white">worldcup2026</span></p>
-            <p className="text-slate-500 text-xs mt-1">Change the password in production by re-seeding with a new password hash.</p>
+          <div>
+            <label className="block text-sm text-green-300 mb-1.5">Min Teams</label>
+            <input
+              type="number"
+              min="1"
+              max="20"
+              value={settings.min_teams}
+              onChange={(e) => setSettings((s) => ({ ...s, min_teams: e.target.value }))}
+              className="input"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-green-300 mb-1.5">Max Teams</label>
+            <input
+              type="number"
+              min="1"
+              max="20"
+              value={settings.max_teams}
+              onChange={(e) => setSettings((s) => ({ ...s, max_teams: e.target.value }))}
+              className="input"
+            />
           </div>
         </div>
-      )}
+        <button onClick={saveSettings} disabled={saving} className="btn-primary">
+          {saving ? 'Saving...' : 'Save Settings'}
+        </button>
+      </div>
+
+      <div className="mt-4 p-4 bg-slate-900/50 border border-slate-800 rounded-xl text-xs text-slate-500 space-y-1">
+        <p><strong className="text-slate-400">Scoring:</strong> Group stage win = 1 pt, Knockout win = 2 pts</p>
+        <p><strong className="text-slate-400">Tiebreaker:</strong> User whose team advanced furthest wins ties</p>
+        <p><strong className="text-slate-400">Stage order:</strong> 0=Group, 1=R32, 2=R16, 3=QF, 4=SF, 5=Final, 6=Champion</p>
+      </div>
+    </div>
+  );
+}
+
+// Main Admin Page
+export default function AdminPage() {
+  const [activeTab, setActiveTab] = useState(0);
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+  const router = useRouter();
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.user || data.user.role !== 'admin') {
+          router.push('/leaderboard');
+        } else {
+          setUser(data.user);
+          setChecking(false);
+        }
+      })
+      .catch(() => router.push('/leaderboard'));
+  }, [router]);
+
+  if (checking) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-green-400 animate-pulse">Checking permissions...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-6">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-white">Admin Panel</h1>
+        <span className="text-sm text-slate-400">{user?.name}</span>
+      </div>
+
+      <div className="flex gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1 mb-6 overflow-x-auto">
+        {TABS.map((tab, i) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(i)}
+            className={`flex-none px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+              activeTab === i
+                ? 'bg-green-700 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      <div>
+        {activeTab === 0 && <RecordResultsTab />}
+        {activeTab === 1 && <UpdateTeamsTab />}
+        {activeTab === 2 && <ParticipantsTab />}
+        {activeTab === 3 && <SettingsTab />}
+      </div>
     </div>
   );
 }

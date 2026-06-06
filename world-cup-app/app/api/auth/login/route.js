@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { getDb } from '@/lib/db';
 import { signToken, setAuthCookie } from '@/lib/auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(request) {
   try {
     const { email, password } = await request.json();
