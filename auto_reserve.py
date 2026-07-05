@@ -31,10 +31,14 @@ load_dotenv()
 # CONFIGURATION — set via .env or environment variables
 # ---------------------------------------------------------------------------
 
-PLAYERS: int = int(os.getenv("AUTO_RESERVE_PLAYERS", "1"))
+PLAYERS: int = int(os.getenv("AUTO_RESERVE_PLAYERS", "4"))
 
-# Comma-separated player names, e.g. "Brett,John,Sarah"
-_raw_names = os.getenv("AUTO_RESERVE_PLAYER_NAMES", "")
+# Comma-separated player names — P1 (Brett) is auto-filled by the club system;
+# include all names here so they're logged and passed to the backend.
+_raw_names = os.getenv(
+    "AUTO_RESERVE_PLAYER_NAMES",
+    "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
+)
 PLAYER_NAMES: list[str] = [n.strip() for n in _raw_names.split(",") if n.strip()]
 
 # If player names aren't configured, fall back to member ID as sole name

@@ -271,81 +271,113 @@ def _navigate_calendar(page: Page, target: datetime) -> None:
 
 def _parse_slots(page: Page, players: int) -> list[dict]:
     """
-    Extract available tee time slots from whatever the results page renders.
+    Extract available tee time slots from the Lakelands booking page.
+
+    The booking page lists tee times as clickable rows/buttons. Each slot
+    shows a time (e.g. "7:30 AM") and is clickable to open the booking modal.
     Returns list of dicts with keys: time, available_spots, price_per_player,
-    cart_included, _book_selector (internal, used by make_reservation).
+    cart_included, _locator_index (internal index used by make_reservation).
     """
     slots: list[dict] = []
 
-    # Strategy 1: rows in a <table> — typical for ASP.NET WebForms club systems
-    rows = page.locator("table tr")
-    for i in range(rows.count()):
-        row = rows.nth(i)
-        text = (row.text_content() or "").strip()
-        if not text:
-            continue
+    # Lakelands renders tee times as clickable table rows or links.
+    # Each bookable row contains a time string like "7:30 AM".
+    # Try table rows first, then fall back to generic clickable containers.
+    candidates = page.locator("table tr")
+    if candidates.count() <= 1:
+        # Fall back to div/link-based listing
+        candidates = page.locator("a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]")
+
+    for i in range(candidates.count()):
+        el = candidates.nth(i)
+        text = (el.text_content() or "").strip()
         t = _parse_time(text)
         if not t:
             continue
-        # Skip header-like rows
-        if any(kw in text.lower() for kw in ["time", "player", "price", "date"]) and i == 0:
+
+        # Skip obvious header rows
+        if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
             continue
 
-        # Available spots — look for digit before "avail" or "open" or parenthetical
-        spots_match = re.search(r"(\d)\s*(?:avail|open|spot|remain)", text, re.IGNORECASE)
-        spots = int(spots_match.group(1)) if spots_match else 4
+        # Only include rows that are actually clickable (have a link/button or are themselves clickable)
+        is_clickable = (
+            el.locator("a, button, input[type='submit'], input[type='button']").count() > 0
+            or el.evaluate("e => e.tagName === 'A' || e.tagName === 'BUTTON'")
+        )
+        if not is_clickable:
+            continue
 
-        # Price — look for dollar amount
         price_match = re.search(r"\$\s*([\d.]+)", text)
         price = float(price_match.group(1)) if price_match else 0.0
-
-        # Cart — "cart included" or "riding"
         cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
 
-        # Determine whether this row is bookable (has a link/button)
-        bookable = (
-            row.locator("a, input[type='submit'], button").count() > 0
-            and spots >= players
-        )
-        if not bookable:
-            continue
-
-        # Build a CSS selector for the book action in this row
-        # We'll use nth-child to target this specific row later
         slots.append({
             "time": t,
-            "available_spots": spots,
+            "available_spots": 4,   # Lakelands doesn't show spot count on the list
             "price_per_player": price,
             "cart_included": cart,
-            "_row_index": i,
+            "_locator_index": i,
         })
-
-    # Strategy 2: div/li-based slot listings (modern club UIs)
-    if not slots:
-        containers = page.locator(
-            '[class*="tee" i], [class*="slot" i], [class*="time" i], '
-            '[class*="booking" i]'
-        )
-        for i in range(containers.count()):
-            c = containers.nth(i)
-            text = (c.text_content() or "").strip()
-            t = _parse_time(text)
-            if not t:
-                continue
-            price_match = re.search(r"\$\s*([\d.]+)", text)
-            price = float(price_match.group(1)) if price_match else 0.0
-            cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
-            if c.locator("a, button, input").count() > 0:
-                slots.append({
-                    "time": t,
-                    "available_spots": 4,
-                    "price_per_player": price,
-                    "cart_included": cart,
-                    "_row_index": i,
-                })
 
     log.info("Parsed %d available slot(s)", len(slots))
     return slots
+
+
+def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) -> None:
+    """
+    Fill in the 'Book Tee Time' modal that appears after clicking a time slot.
+
+    Modal fields (from the actual Lakelands UI):
+      - Round:      "Eighteen Holes" (leave as default)
+      - Party Size: Single / Twosome / Threesome / Foursome
+      - Date/Time:  pre-filled from the slot selection
+      - P1:         auto-filled with member name ("Dutcher, Brett")
+      - P2–P4:      additional player name fields
+      - Send Confirmations: checkbox (leave checked)
+    """
+    # Wait for the modal to appear
+    page.wait_for_selector(
+        'text="Book Tee Time", [class*="modal" i], [class*="dialog" i], [class*="popup" i]',
+        timeout=10_000,
+    )
+    _screenshot(page, "05_booking_modal")
+
+    # Party Size — select by visible text ("Single", "Twosome", etc.)
+    party_sel = page.locator("select").filter(has_text=re.compile(
+        r"Single|Twosome|Threesome|Foursome", re.IGNORECASE
+    ))
+    if party_sel.count():
+        party_sel.first.select_option(label=party_size)
+        log.info("Set Party Size to: %s", party_size)
+    else:
+        # Fallback: any select on the modal
+        selects = page.locator("select")
+        for i in range(selects.count()):
+            opts = selects.nth(i).inner_text()
+            if "single" in opts.lower():
+                selects.nth(i).select_option(label=party_size)
+                log.info("Set Party Size to %s (fallback selector)", party_size)
+                break
+
+    page.wait_for_timeout(500)   # let the form re-render after party size change
+
+    # P1 is auto-filled with member name — skip it.
+    # Fill additional players if provided (P2 onward).
+    if len(player_names) > 1:
+        name_inputs = page.locator(
+            'input[type="text"][id*="player" i], '
+            'input[type="text"][id*="Player" i], '
+            'input[type="text"][placeholder*="player" i]'
+        )
+        # Skip index 0 (P1, pre-filled), fill the rest
+        for idx, name in enumerate(player_names[1:], start=1):
+            if idx < name_inputs.count():
+                inp = name_inputs.nth(idx)
+                if not inp.input_value():   # only fill if blank
+                    inp.fill(name)
+                    log.debug("Filled P%d with: %s", idx + 1, name)
+
+    _screenshot(page, "06_modal_filled")
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +404,9 @@ def fetch_available_tee_times(date: str, players: int) -> list[dict]:
             browser.close()
 
 
+_PARTY_LABELS = {1: "Single", 2: "Twosome", 3: "Threesome", 4: "Foursome"}
+
+
 def make_reservation(
     date: str,
     time: str,
@@ -379,6 +414,8 @@ def make_reservation(
     player_names: list[str],
     member_id: str,
 ) -> dict:
+    party_size = _PARTY_LABELS.get(players, "Single")
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
@@ -401,37 +438,28 @@ def make_reservation(
                     ),
                 }
 
-            # Click the book link/button in that row
-            row_index = target["_row_index"]
-            rows = page.locator("table tr")
-            row = rows.nth(row_index)
-            book_el = row.locator("a, input[type='submit'], button").first
+            # Re-create the same candidates locator used in _parse_slots so
+            # _locator_index maps to the correct element.
+            loc_idx = target["_locator_index"]
+            candidates = page.locator("table tr")
+            if candidates.count() <= 1:
+                candidates = page.locator(
+                    "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
+                )
 
-            if not book_el.count():
-                _screenshot(page, "error_no_book_button")
-                return {"success": False, "message": "Could not find booking button for that slot."}
-
+            el = candidates.nth(loc_idx)
+            book_el = el.locator("a, button, input[type='submit'], input[type='button']").first
             log.info("Clicking book for %s on %s ...", time, date)
-            book_el.click()
-            page.wait_for_load_state("networkidle", timeout=30_000)
-            _screenshot(page, "05_booking_form")
+            if book_el.count():
+                book_el.click()
+            else:
+                el.click()
 
-            # Fill player names if a form appears
-            name_inputs = page.locator('input[type="text"][id*="name" i], input[type="text"][name*="name" i]')
-            for i, name in enumerate(player_names):
-                if i < name_inputs.count():
-                    name_inputs.nth(i).fill(name)
+            # Fill the "Book Tee Time" modal (party size + player names P2–P4)
+            _fill_booking_modal(page, party_size, player_names)
 
-            # Set player count if a dropdown is re-shown
-            try:
-                sel = page.locator("select").first
-                if sel.count() and sel.is_visible():
-                    sel.select_option(str(players))
-            except Exception:
-                pass
-
-            # Confirm / submit the reservation
-            confirmed = _click_first(
+            # Submit the modal
+            _click_first(
                 page,
                 [
                     '[value*="Confirm" i]',
@@ -445,7 +473,7 @@ def make_reservation(
             )
 
             page.wait_for_load_state("networkidle", timeout=30_000)
-            _screenshot(page, "06_confirmation")
+            _screenshot(page, "07_confirmation")
 
             # Extract confirmation number from the page
             body = page.text_content("body") or ""
@@ -454,15 +482,22 @@ def make_reservation(
                 body,
                 re.IGNORECASE,
             )
-            conf_number = conf_match.group(1) if conf_match else f"LG-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            conf_number = (
+                conf_match.group(1)
+                if conf_match
+                else f"LG-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            )
 
-            # Check for success vs error messaging on the confirmation page
             if any(kw in body.lower() for kw in ["error", "failed", "not available", "sorry"]):
                 _screenshot(page, "error_booking_failed")
                 err_match = re.search(r"(error[^.]*\.|failed[^.]*\.)", body, re.IGNORECASE)
                 return {
                     "success": False,
-                    "message": err_match.group(0) if err_match else "Booking failed — see debug_screenshots for details.",
+                    "message": (
+                        err_match.group(0)
+                        if err_match
+                        else "Booking failed — see debug_screenshots for details."
+                    ),
                 }
 
             return {
@@ -470,11 +505,12 @@ def make_reservation(
                 "confirmation_number": conf_number,
                 "message": (
                     f"Tee time reserved: {players} player(s) on {date} at {time}. "
+                    f"Players: {', '.join(player_names)}. "
                     f"Confirmation: {conf_number}"
                 ),
             }
 
-        except Exception as exc:
+        except Exception:
             _screenshot(page, "error_reserve")
             raise
         finally:
