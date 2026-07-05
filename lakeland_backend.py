@@ -156,113 +156,144 @@ def _login(page: Page) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Navigate to the booking page and select date + players
+# Navigate to the booking page and advance the tee-sheet calendar
 # ---------------------------------------------------------------------------
 
 def _open_booking_for(page: Page, date: str, players: int) -> None:
-    """Navigate to booking page, pick date and player count, trigger search."""
-    log.info("Opening booking page for %s, %d player(s)...", date, players)
-    page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-    _screenshot(page, "03_booking_page")
+    """
+    Navigate via Golf → Book a Tee Time in the side nav, then drive the
+    tee-sheet calendar to the target date.
 
-    # ---- Date selection ----
-    date_obj = datetime.strptime(date, "%Y-%m-%d")
-    formatted = date_obj.strftime("%m/%d/%Y")          # MM/DD/YYYY common in US club systems
+    The Lakelands site nav (post-login):
+        Golf  ▶  →  Book a Tee Time
 
-    date_filled = _fill_first(
-        page,
-        [
-            'input[type="date"]',
-            '[id*="date" i]',
-            '[name*="date" i]',
-            '[id*="Date" i]',
-            '[name*="Date" i]',
-            'input[id*="txt" i][id*="date" i]',
-        ],
-        formatted,
-        "date",
-    )
+    The booking page (TEE SHEET tab) shows:
+        ◄  Fri-July 17, 2026  ►
+              [Calendar]
+    """
+    log.info("Navigating Golf → Book a Tee Time for %s ...", date)
 
-    if not date_filled:
-        # Some club systems use a visible calendar widget — click the right day
-        log.warning(
-            "No date text input found; attempting calendar navigation for %s.", date
-        )
-        _screenshot(page, "03_no_date_input")
-        _navigate_calendar(page, date_obj)
-
-    # ---- Player count ----
-    try:
-        player_sel = page.locator(
-            "select, "
-            '[id*="player" i], [name*="player" i], '
-            '[id*="holes" i], [id*="NumPlayer" i]'
-        )
-        # Look for the player-count dropdown specifically
-        for i in range(player_sel.count()):
-            el = player_sel.nth(i)
-            tag = el.evaluate("e => e.tagName.toLowerCase()")
-            if tag == "select":
-                el.select_option(str(players))
-                log.debug("Set players to %d", players)
-                break
-    except Exception as exc:
-        log.debug("Player count selector not found or not needed: %s", exc)
-
-    # ---- Search / Find times ----
-    searched = _click_first(
-        page,
-        [
-            '[id*="Search" i]',
-            '[value*="Search" i]',
-            '[value*="Find" i]',
-            '[value*="Check" i]',
-            'input[type="submit"]',
-            'button[type="submit"]',
-        ],
-        "search button",
-    )
-    if not searched:
-        # Some systems auto-refresh on date change — just wait
-        log.debug("No search button found; waiting for auto-refresh.")
-
-    page.wait_for_load_state("networkidle", timeout=30_000)
-    _screenshot(page, "04_results")
-
-
-def _navigate_calendar(page: Page, target: datetime) -> None:
-    """Click through a calendar widget to reach target month/year, then click the day."""
-    # Most club calendar widgets show month/year text and prev/next arrows
-    max_months = 4
-    for _ in range(max_months):
-        header = page.locator('[class*="calendar" i] [class*="header" i], '
-                              '.ui-datepicker-title, '
-                              '[class*="picker" i] [class*="title" i]')
-        if not header.count():
-            break
-        header_text = header.first.text_content() or ""
-        try:
-            shown = datetime.strptime(header_text.strip(), "%B %Y")
-            if shown.year == target.year and shown.month == target.month:
-                break
-            # Navigate forward
-            _click_first(page, ['[class*="next" i]', '.ui-datepicker-next', '[title*="Next" i]'], "calendar next")
-            page.wait_for_timeout(300)
-        except ValueError:
-            break  # Can't parse header — give up on calendar nav
-
-    # Click the target day
-    day_str = str(target.day)
+    # Step 1: expand the Golf submenu
     _click_first(
         page,
         [
-            f'[class*="calendar" i] a:text-is("{day_str}")',
-            f'.ui-datepicker-calendar a:text-is("{day_str}")',
-            f'td:text-is("{day_str}"):not([class*="other"])',
+            'nav a:text-is("Golf")',
+            'li a:text-is("Golf")',
+            'a:text-is("Golf")',
+            '*:text-is("Golf")',
         ],
-        f"calendar day {day_str}",
+        "Golf nav item",
     )
-    page.wait_for_load_state("networkidle", timeout=10_000)
+    page.wait_for_timeout(500)
+    _screenshot(page, "03a_golf_menu")
+
+    # Step 2: click "Book a Tee Time"
+    _click_first(
+        page,
+        [
+            'a:text-is("Book a Tee Time")',
+            'a:text-matches("book.*tee|tee.*time", "i")',
+            '*:text-is("Book a Tee Time")',
+        ],
+        "Book a Tee Time link",
+    )
+    page.wait_for_load_state("networkidle", timeout=30_000)
+    _screenshot(page, "03b_booking_page")
+
+    # Step 3: advance the tee-sheet calendar to the target date
+    target = datetime.strptime(date, "%Y-%m-%d")
+    _navigate_teesheet_to(page, target)
+    _screenshot(page, "04_results")
+
+
+def _navigate_teesheet_to(page: Page, target: datetime) -> None:
+    """
+    Drive the Lakelands tee-sheet date display to `target`.
+
+    The page shows a date header like "Fri-July 17, 2026" with ◄/► arrows
+    and a Calendar button. Strategy:
+      1. Click Calendar — if a date-picker appears, select the target day.
+      2. Fall back to reading the current date label and clicking ► one day
+         at a time (safe for up to 20 clicks = 3 weeks out).
+    """
+    MAX_DAY_CLICKS = 20
+
+    # --- Try the Calendar button first ---
+    cal_clicked = _click_first(
+        page,
+        ['button:text-is("Calendar")', 'a:text-is("Calendar")', '*:text-is("Calendar")'],
+        "Calendar button",
+    )
+    if cal_clicked:
+        page.wait_for_timeout(600)
+        _screenshot(page, "03c_calendar_picker")
+        day_str = str(target.day)
+        day_clicked = _click_first(
+            page,
+            [
+                f'td[data-date*="{target.strftime("%Y-%m-%d")}"] a',
+                f'.ui-datepicker-calendar td a:text-is("{day_str}")',
+                f'[class*="calendar" i] td:text-is("{day_str}")',
+                f'[class*="picker" i] td:text-is("{day_str}")',
+                f'td:not([class*="other"]):not([class*="disabled"]) a:text-is("{day_str}")',
+            ],
+            f"calendar day {day_str}",
+        )
+        if day_clicked:
+            page.wait_for_load_state("networkidle", timeout=15_000)
+            _screenshot(page, "03d_date_selected")
+            return
+
+    # --- Fall back: read date label, click ► until we match ---
+    for _ in range(MAX_DAY_CLICKS):
+        # Parse date from the tee-sheet header, e.g. "Fri-July 17, 2026"
+        current_label = ""
+        for loc in [
+            page.locator('[class*="date" i]:not(input)'),
+            page.locator('[class*="header" i]:not(input)'),
+            page.locator('h2, h3, h4, strong'),
+        ]:
+            for i in range(loc.count()):
+                txt = (loc.nth(i).text_content() or "").strip()
+                if re.search(
+                    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}",
+                    txt, re.IGNORECASE,
+                ):
+                    current_label = txt
+                    break
+            if current_label:
+                break
+
+        if current_label:
+            clean = re.sub(r"^[A-Za-z]+-", "", current_label).strip()
+            for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+                try:
+                    shown = datetime.strptime(clean, fmt)
+                    if shown.date() == target.date():
+                        log.info("Tee sheet on target date %s", target.strftime("%Y-%m-%d"))
+                        return
+                    if shown.date() < target.date():
+                        _click_first(
+                            page,
+                            ['[class*="next" i]', 'a:has-text(">")', 'button:has-text(">")'],
+                            "next-day arrow",
+                        )
+                        page.wait_for_load_state("networkidle", timeout=10_000)
+                    else:
+                        log.warning("Overshot target — stopping")
+                        return
+                    break
+                except ValueError:
+                    continue
+        else:
+            _click_first(
+                page,
+                ['[class*="next" i]', 'a:has-text(">")', 'button:has-text(">")'],
+                "next-day arrow (blind)",
+            )
+            page.wait_for_load_state("networkidle", timeout=10_000)
+
+    log.warning("Could not navigate to %s within %d clicks", target.date(), MAX_DAY_CLICKS)
 
 
 # ---------------------------------------------------------------------------
