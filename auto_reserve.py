@@ -1,30 +1,24 @@
 """
-Automatic Sunday Tee Time Reserver
+Automatic Sunday Tee Time Reserver — Lakelands Golf
 
-Designed to be run by cron slightly BEFORE the exact moment your club opens
-reservations (2 weeks in advance). Use --early-seconds to control how many
-seconds before the window opens to start the script (default: 45).
-
-The script pre-authenticates while waiting, then fires the booking request
-at the exact right second for maximum speed.
+Cron fires at 7:31 AM every Sunday. Books the 7:30 AM tee time on the
+Sunday exactly 14 days out (Lakelands opens the booking window at 7:30 AM,
+two weeks in advance).
 
 Usage:
-    python auto_reserve.py [--dry-run] [--early-seconds 45]
+    python auto_reserve.py [--dry-run]
 
-    --dry-run        Check availability and log what would be booked, but don't
-                     submit. Useful for testing.
-    --early-seconds  How many seconds before the window opens to start the
-                     script (default 45). Set your cron job this many seconds
-                     early and pass the same value here.
+    --dry-run  Check availability and log what would be booked, but don't
+               submit. Useful for testing.
 
-Cron setup (see bottom of this file for instructions).
+Cron line (add via `crontab -e`):
+    31 7 * * 0 /usr/bin/python3 /path/to/auto_reserve.py
 """
 
 import argparse
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -46,6 +40,10 @@ PLAYER_NAMES: list[str] = [n.strip() for n in _raw_names.split(",") if n.strip()
 # If player names aren't configured, fall back to member ID as sole name
 if not PLAYER_NAMES:
     PLAYER_NAMES = [os.getenv("GOLF_CLUB_MEMBER_ID", "Member")]
+
+# Preferred tee time — book this slot if available, otherwise fall back to
+# the earliest slot. Format must match what the booking site returns (e.g. "7:30 AM").
+PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
 
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
@@ -81,53 +79,40 @@ def target_sunday() -> str:
     return target.strftime("%Y-%m-%d")
 
 
-def first_available_slot(date: str, players: int) -> dict | None:
-    """Return the earliest available tee time slot, or None if none exist."""
-    slots = golf_agent._fetch_available_tee_times(date, players)
-    return slots[0] if slots else None
+def pick_slot(slots: list[dict], preferred_time: str) -> dict | None:
+    """
+    Return the preferred time slot if available, otherwise the earliest slot.
+    Comparison is case-insensitive and ignores extra spaces.
+    """
+    if not slots:
+        return None
+    preferred_norm = preferred_time.strip().upper()
+    for slot in slots:
+        if slot["time"].strip().upper() == preferred_norm:
+            return slot
+    log.warning(
+        "Preferred time %s not available — falling back to earliest slot: %s",
+        preferred_time, slots[0]["time"],
+    )
+    return slots[0]
 
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
-def _wait_for_booking_window(early_seconds: int) -> None:
-    """
-    If the script was started `early_seconds` before the booking window opens,
-    sleep until exactly the right moment.
-
-    Cron fires at HH:MM:00. If early_seconds=45, set the cron job 45 seconds
-    early (HH:MM-1:15 or use `* * * * * sleep 15 && python ...`) and pass
-    --early-seconds 45. This function sleeps off the gap so that the booking
-    request hits the server right as the window opens.
-    """
-    if early_seconds <= 0:
-        return
-    now = datetime.now()
-    # Target = top of the current minute + (60 - early_seconds) seconds
-    # e.g. if early_seconds=45 and now is HH:MM:00, wake at HH:MM:15
-    seconds_into_minute = now.second + now.microsecond / 1_000_000
-    target_seconds = 60 - early_seconds
-    sleep_for = target_seconds - seconds_into_minute
-    if sleep_for > 0:
-        log.info("Waiting %.1fs for booking window to open...", sleep_for)
-        time.sleep(sleep_for)
-    log.info("Booking window open — proceeding at %s", datetime.now().strftime("%H:%M:%S.%f")[:-3])
-
-
-def run(dry_run: bool = False, early_seconds: int = 0) -> int:
+def run(dry_run: bool = False) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
     Called directly by cron — exit code matters for monitoring.
     """
-    member_id = os.getenv("GOLF_CLUB_MEMBER_ID", "DEMO_MEMBER")
     club_name = os.getenv("GOLF_CLUB_NAME", "the Golf Club")
 
     log.info("=== Auto-reserve started%s ===", " [DRY RUN]" if dry_run else "")
-    log.info("Club: %s | Member: %s | Players: %d (%s)",
-             club_name, member_id, PLAYERS, ", ".join(PLAYER_NAMES))
+    log.info("Club: %s | Players: %d (%s) | Preferred time: %s",
+             club_name, PLAYERS, ", ".join(PLAYER_NAMES), PREFERRED_TIME)
 
-    # 1. Determine target date
+    # 1. Determine target date (Sunday 14 days from today)
     try:
         date = target_sunday()
     except ValueError as e:
@@ -136,55 +121,32 @@ def run(dry_run: bool = False, early_seconds: int = 0) -> int:
 
     log.info("Target Sunday: %s", date)
 
-    # 2. Pre-authenticate while waiting for the booking window
-    #    (Playwright backend will log in during fetch; for the race we warm up here)
-    if early_seconds > 0 and golf_agent._USING_REAL_BACKEND:
-        log.info("Pre-authenticating %ds before booking window...", early_seconds)
-        try:
-            import lakeland_backend as _lb
-            from playwright.sync_api import sync_playwright
-            _pw = sync_playwright().start()
-            _browser = _pw.chromium.launch(headless=True)
-            _page = _browser.new_page()
-            _lb._login(_page)
-            log.info("Pre-auth complete.")
-            _wait_for_booking_window(early_seconds)
-            # Now fetch from the already-logged-in page directly
-            _lb._open_booking_for(_page, date, PLAYERS)
-            slots = _lb._parse_slots(_page, PLAYERS)
-            _browser.close()
-            _pw.stop()
-        except Exception as exc:
-            log.warning("Pre-auth race failed (%s); falling back to normal flow.", exc)
-            _wait_for_booking_window(early_seconds)
-            slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
-    else:
-        _wait_for_booking_window(early_seconds)
-        slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
-
+    # 2. Fetch available slots
+    slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
     if not slots:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
-    slot = slots[0]
+    # 3. Pick preferred time (7:30 AM), fall back to earliest if unavailable
+    slot = pick_slot(slots, PREFERRED_TIME)
     log.info(
-        "First available slot: %s — $%s/player, cart %s",
+        "Booking slot: %s — $%s/player, cart %s",
         slot["time"],
         slot.get("price_per_player", "?"),
         "included" if slot.get("cart_included") else "not included",
     )
 
-    # 3. Book it (unless dry run)
     if dry_run:
         log.info("DRY RUN — would reserve %s on %s for %s.", slot["time"], date, ", ".join(PLAYER_NAMES))
         return 0
 
+    # 4. Submit the reservation
     result = golf_agent._make_reservation(
         date=date,
         time=slot["time"],
         players=PLAYERS,
         player_names=PLAYER_NAMES,
-        member_id=member_id,
+        member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
     )
 
     if result.get("success"):
@@ -197,15 +159,13 @@ def run(dry_run: bool = False, early_seconds: int = 0) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Auto-reserve the first Sunday tee time 2 weeks out.")
+    parser = argparse.ArgumentParser(
+        description="Auto-reserve the 7:30 AM Sunday tee time at Lakelands, 2 weeks out."
+    )
     parser.add_argument("--dry-run", action="store_true",
                         help="Check availability but do not submit the reservation.")
-    parser.add_argument("--early-seconds", type=int, default=0, metavar="N",
-                        help="Start N seconds before the booking window opens (default 0). "
-                             "Set your cron job N seconds early and pass this flag.")
     args = parser.parse_args()
-
-    sys.exit(run(dry_run=args.dry_run, early_seconds=args.early_seconds))
+    sys.exit(run(dry_run=args.dry_run))
 
 
 if __name__ == "__main__":
@@ -216,9 +176,8 @@ if __name__ == "__main__":
 # CRON SETUP
 # ---------------------------------------------------------------------------
 #
-# Lakelands opens reservations exactly 2 weeks in advance on the minute.
-# You want this script to fire 45 seconds BEFORE that minute so it can
-# pre-authenticate, then hit the booking the instant the window opens.
+# Lakelands opens at 7:30 AM on Sundays, 2 weeks in advance.
+# We fire at 7:31 AM — one minute later — to let the window open cleanly.
 #
 # Step 1 — find your Python path:
 #   which python3
@@ -226,16 +185,16 @@ if __name__ == "__main__":
 # Step 2 — edit your crontab:
 #   crontab -e
 #
-# Step 3 — add this line (adjust HOUR/MINUTE to 45s before your club's opening time).
+# Step 3 — add this exact line (update the path):
 #
-# Example: club opens at 7:00 AM → start at 6:59:15 → cron at 6:59, --early-seconds 45
+#   31 7 * * 0 /usr/bin/python3 /home/brett/golf/auto_reserve.py
 #
-#   59 6 * * 0 /usr/bin/python3 /home/brett/golf/auto_reserve.py --early-seconds 45
+#   Breakdown:  31 = minute, 7 = hour (7:31 AM), * * 0 = every Sunday
 #
-# Or if the club opens at midnight (0:00):
+# Step 4 — verify .env is present next to this script (cron has no shell env).
 #
-#   59 23 * * 6 /usr/bin/python3 /home/brett/golf/auto_reserve.py --early-seconds 45
-#   (note: Saturday 23:59 fires 45s before Sunday midnight)
+# Step 5 — test without waiting for Sunday:
+#   python auto_reserve.py --dry-run
 #
 #   Field breakdown:
 #     MINUTE  — the exact minute the booking window opens (e.g. 0)
