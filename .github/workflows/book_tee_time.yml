@@ -1,0 +1,62 @@
+name: Book Sunday Tee Time
+
+on:
+  schedule:
+    # 7:31 AM EDT (UTC-4) every Sunday = 11:31 AM UTC
+    - cron: '31 11 * * 0'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to book (YYYY-MM-DD). Leave empty to auto-compute 14 days out.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — check availability but do not submit booking'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Book tee time
+        env:
+          GOLF_CLUB_NAME: Lakelands Golf and Country Club
+          GOLF_CLUB_USERNAME: ${{ secrets.GOLF_CLUB_USERNAME }}
+          GOLF_CLUB_PASSWORD: ${{ secrets.GOLF_CLUB_PASSWORD }}
+          AUTO_RESERVE_PLAYERS: ${{ secrets.AUTO_RESERVE_PLAYERS }}
+          AUTO_RESERVE_PLAYER_NAMES: ${{ secrets.AUTO_RESERVE_PLAYER_NAMES }}
+          AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.date }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python auto_reserve.py $ARGS
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: debug_screenshots/
+          if-no-files-found: ignore

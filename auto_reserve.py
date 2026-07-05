@@ -105,7 +105,7 @@ def pick_slot(slots: list[dict], preferred_time: str) -> dict | None:
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run(dry_run: bool = False) -> int:
+def run(dry_run: bool = False, date_override: str | None = None) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
     Called directly by cron — exit code matters for monitoring.
@@ -116,12 +116,16 @@ def run(dry_run: bool = False) -> int:
     log.info("Club: %s | Players: %d (%s) | Preferred time: %s",
              club_name, PLAYERS, ", ".join(PLAYER_NAMES), PREFERRED_TIME)
 
-    # 1. Determine target date (Sunday 14 days from today)
-    try:
-        date = target_sunday()
-    except ValueError as e:
-        log.error("Date error: %s", e)
-        return 1
+    # 1. Determine target date
+    if date_override:
+        date = date_override
+        log.info("Using override date: %s", date)
+    else:
+        try:
+            date = target_sunday()
+        except ValueError as e:
+            log.error("Date error: %s", e)
+            return 1
 
     log.info("Target Sunday: %s", date)
 
@@ -168,8 +172,11 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Check availability but do not submit the reservation.")
+    parser.add_argument("--date", metavar="YYYY-MM-DD",
+                        help="Override the target date (skips the Sunday-14-day check). "
+                             "Useful for one-off tests.")
     args = parser.parse_args()
-    sys.exit(run(dry_run=args.dry_run))
+    sys.exit(run(dry_run=args.dry_run, date_override=args.date))
 
 
 if __name__ == "__main__":
