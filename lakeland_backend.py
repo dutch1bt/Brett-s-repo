@@ -1126,12 +1126,10 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
         last_name = name.strip().split()[-1]
         log.info("Selecting P%d: %r → dropdown text %r", player_num, name, last_first)
 
-        # Telerik RadComboBox client ID and input element ID
-        # These IDs are for the Axis dialog frame's form, not the main page.
-        combo_id = (
-            f"masterPageUC_MPCA17_ctl04_ctrl_Booking_ctl0{player_num}"
-            f"_PlayerSelectorctrl_PCombo_PlayerName"
-        )
+        # Telerik RadComboBox client ID and input element ID (from iframe diagnostics).
+        # The iframe uses ctl00_ctrl_MakeTeeTime_P{N}_PCombo_PlayerName, NOT
+        # the main-page masterPageUC_MPCA17 IDs.
+        combo_id = f"ctl00_ctrl_MakeTeeTime_P{player_num}_PCombo_PlayerName"
         input_id = combo_id + "_Input"
 
         filled = False
@@ -1205,24 +1203,35 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
             except Exception as ex:
                 log.warning("P%d strategy 2 failed: %s", player_num, ex)
 
-        # Strategy 3: Positional fallback — Nth rcbInput in the iframe
+        # Strategy 3: Positional fallback — Nth rcbInput in the iframe.
+        # rcbInput layout: idx 5=P1name,6=P1transport, 7=P2name,8=P2transport, ...
+        # Formula: rcb_idx = 5 + (player_num - 1) * 2
         if not filled:
             try:
                 all_rcb = ctx.locator(".rcbInput")
                 n_rcb = all_rcb.count()
-                log.warning("P%d: S3 positional fallback, rcbInput count=%d idx=%d",
-                            player_num, n_rcb, idx)
-                if idx < n_rcb:
-                    fb = all_rcb.nth(idx)
+                rcb_idx = 5 + (player_num - 1) * 2
+                log.warning("P%d: S3 positional fallback, rcbInput count=%d rcb_idx=%d",
+                            player_num, n_rcb, rcb_idx)
+                if rcb_idx < n_rcb:
+                    fb = all_rcb.nth(rcb_idx)
                     try:
                         fb.scroll_into_view_if_needed()
                     except Exception:
                         pass
                     fb.click(force=True)
-                    page.wait_for_timeout(800)
+                    page.wait_for_timeout(300)
+                    try:
+                        fb.fill(last_name)
+                    except Exception:
+                        try:
+                            fb.type(last_name)
+                        except Exception:
+                            pass
+                    page.wait_for_timeout(1200)
                     for item_sel in [
-                        f"li.rcbItem:has-text('{last_first}')",
                         f"li.rcbItem:has-text('{last_name}')",
+                        f"li.rcbItem:has-text('{last_first}')",
                         "li.rcbItem",
                     ]:
                         try:
