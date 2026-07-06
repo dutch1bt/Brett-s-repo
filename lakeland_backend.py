@@ -214,42 +214,87 @@ def _open_booking_for(page: Page, date: str, players: int):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
 
-    Returns the Frame or Page that contains the tee-sheet content so callers
-    can pass it to _parse_slots and slot-click functions.
+    The Lakelands site uses separate session tokens per sub-system (ssid).
+    Logging in via LOGIN_URL establishes ssid=100033 but NOT ssid=100178 (booking).
+    When we navigate to BOOKING_URL unauthenticated, the server redirects to a
+    second login page (?p=home&e=6&ssidfail=true) that has doLogin(...pageid=125...)
+    baked into its submit button. Logging in *there* lands us directly on the
+    booking page — no separate pre-login needed.
+
+    Returns the Frame or Page that contains the tee-sheet content.
     """
     log.info("Opening booking page for %s ...", date)
+    username, password = _credentials()
 
-    # --- Primary: navigate directly to the booking URL ---
+    # Navigate directly to the booking URL (unauthenticated is fine — it will
+    # redirect us to the ssidfail login page for the booking sub-system).
     page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-    _screenshot(page, "03_booking_page")
+    _screenshot(page, "03_booking_goto")
     _log_frames(page)
-    log.info("Booking page URL: %s", page.url)
+    log.info("After goto BOOKING_URL: %s", page.url)
 
-    # Detect redirect back to login (session not accepted)
-    if "pageid=9" in page.url or "login" in page.url.lower():
-        log.warning("Direct URL redirected to login — trying menu navigation")
-        _login(page)
-        _click_first(
+    # If we were redirected to the ssidfail/login page, fill credentials there.
+    # The submit button calls doLogin('p=dynamicmodule&pageid=125&...') so after
+    # login we land directly on the booking page.
+    if any(kw in page.url for kw in ["ssidfail", "pageid=9", "login", "e=6"]):
+        log.info("Redirected to login page — logging in via the ssidfail form")
+        _dump_html(page, "03_ssidfail_login_page")
+
+        # Fill username
+        filled = _fill_first(
             page,
-            ['a:text-is("Golf")', 'li a:text-is("Golf")', '*:text-is("Golf")'],
-            "Golf nav item",
+            [
+                '[id*="UserName" i]',
+                '[name*="UserName" i]',
+                'input[type="text"]',
+                '[id*="user" i]',
+            ],
+            username,
+            "username",
         )
-        page.wait_for_timeout(600)
+        if not filled:
+            _screenshot(page, "03_no_username_field")
+            raise RuntimeError(
+                "Could not find username field on the ssidfail login page. "
+                "See debug_screenshots/03_no_username_field*.png"
+            )
+
+        # Fill password
+        page.locator('input[type="password"]').first.fill(password)
+
+        # Click the secure-login button — it calls doLogin(...pageid=125...) so
+        # after it completes we should land on the booking page.
         _click_first(
             page,
-            ['a:text-is("Book a Tee Time")', 'a:text-matches("book.*tee", "i")'],
-            "Book a Tee Time link",
+            [
+                '#btnSecureLogin',
+                '[id*="SecureLogin" i]',
+                'input[value*="Sign In" i]',
+                '[onclick*="doLogin" i]',
+                'input[type="submit"]',
+            ],
+            "sign-in button on ssidfail page",
         )
         page.wait_for_load_state("networkidle", timeout=30_000)
-        _screenshot(page, "03b_booking_page_menu")
-        _log_frames(page)
+        _screenshot(page, "03b_after_ssidfail_login")
+        log.info("After ssidfail login: %s", page.url)
+
+        # If we're STILL on a login/ssidfail page the credentials were rejected
+        if any(kw in page.url for kw in ["ssidfail", "e=6"]):
+            raise RuntimeError(
+                "Login failed after ssidfail page — check GOLF_CLUB_USERNAME / "
+                "GOLF_CLUB_PASSWORD secrets. Current URL: " + page.url
+            )
+
+    log.info("Booking page URL: %s", page.url)
+    _screenshot(page, "03c_booking_page")
+    _log_frames(page)
+    _dump_html(page, "03c_booking_page_html")
+    _log_clickable_elements(page)
 
     # --- Advance the tee-sheet calendar to the target date ---
     target = datetime.strptime(date, "%Y-%m-%d")
-
-    # Check whether the booking content lives inside an iframe
     booking_ctx = _find_booking_frame(page)
-
     _navigate_teesheet_to(booking_ctx, target)
     _screenshot(page, "04_results")
     return booking_ctx
@@ -585,7 +630,6 @@ def fetch_available_tee_times(date: str, players: int) -> list[dict]:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            _login(page)
             ctx = _open_booking_for(page, date, players)
             slots = _parse_slots(ctx, players)
             # Strip internal keys before returning
@@ -616,7 +660,6 @@ def make_reservation(
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            _login(page)
             ctx = _open_booking_for(page, date, players)
             slots = _parse_slots(ctx, players)
 
