@@ -956,7 +956,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                 )].map(i => ({
                     type: i.type, id: i.id, name: i.name,
                     cls: (i.className||'').slice(0,60),
-                    value: i.value.slice(0,30), vis: vis(i),
+                    value: (i.value||'').slice(0,30), vis: vis(i),
                 }));
                 const btns = [...document.querySelectorAll(
                     'input[type=submit],input[type=button],button,[onclick]'
@@ -1002,6 +1002,9 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.warning("Booking form diagnostic failed: %s", e)
 
     # --- Party Size ---
+    # Set party size on the (hidden) drpGroupSize select, then trigger a proper
+    # ASP.NET postback so the server adds P3/P4 player input rows to the DOM.
+    # Without the postback, only the P2 row exists (Twosome default).
     try:
         result = page.evaluate("""
             ([party]) => {
@@ -1011,9 +1014,14 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                     const match = opts.find(o => o.text.toLowerCase() === partyNorm);
                     if (match) {
                         sel.value = match.value;
-                        ['change','input'].forEach(evt =>
-                            sel.dispatchEvent(new Event(evt, {bubbles: true})));
-                        return 'JS-set party size on ' + (sel.id || 'unnamed select');
+                        // jQuery trigger is more compatible with ASP.NET UpdatePanel
+                        if (typeof $ !== 'undefined') {
+                            $(sel).val(match.value).trigger('change');
+                        } else {
+                            ['change','input'].forEach(evt =>
+                                sel.dispatchEvent(new Event(evt, {bubbles: true})));
+                        }
+                        return 'set ' + (sel.id||'select') + ' value=' + match.value;
                     }
                 }
                 return 'party size select not found';
@@ -1022,7 +1030,42 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.info("Party size JS: %s", result)
     except Exception as e:
         log.warning("JS party size set failed: %s", e)
-    page.wait_for_timeout(1000)
+
+    # Explicitly call __doPostBack for drpGroupSize so the server adds P3/P4 player rows.
+    page.wait_for_timeout(500)
+    try:
+        pb = page.evaluate("""
+            () => {
+                // ASP.NET UniqueID uses $ separators, but select.name already has them
+                const sel = document.getElementById(
+                    'masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize');
+                const target = sel ? sel.name : 'masterPageUC$MPCA17$ctl04$ctrl_Booking$drpGroupSize';
+                if (typeof __doPostBack !== 'undefined') {
+                    __doPostBack(target, '');
+                    return 'doPostBack(' + target + ')';
+                }
+                return 'doPostBack not defined';
+            }
+        """)
+        log.info("Party size postback: %s", pb)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8_000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        log.warning("doPostBack for drpGroupSize failed: %s", e)
+
+    # Wait for P3/P4 player inputs to appear (up to 8 s, poll every 500 ms)
+    for _ in range(16):
+        n_rcb = page.locator(".rcbInput").count()
+        if n_rcb >= 3:
+            log.info("Party size AJAX done: %d rcbInput rows present", n_rcb)
+            break
+        page.wait_for_timeout(500)
+    else:
+        log.warning("Only %d rcbInput rows after 8 s — P3/P4 may be missing",
+                    page.locator(".rcbInput").count())
 
     # --- Reveal PlayerSelectorDiv ---
     # After clicking Reserve the player section is hidden. We:
@@ -1128,7 +1171,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
             )
             log.info("Filling P%d (%s) via id=%r", player_num, name, known_id)
 
-            # Prepare: remove empty-message placeholder class and ensure element is accessible
+            # Prepare: remove empty-message class and show element + ancestors
             try:
                 page.evaluate(f"""
                     () => {{
@@ -1136,10 +1179,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                         if (!inp) return;
                         inp.classList.remove('rcbEmptyMessage');
                         inp.value = '';
-                        inp.style.display = 'inline-block';
-                        inp.style.visibility = 'visible';
                         inp.removeAttribute('readonly');
-                        // Show the Telerik wrapper too
                         let el = inp;
                         while (el && el !== document.body) {{
                             if (window.getComputedStyle(el).display === 'none') el.style.display = 'block';
@@ -1153,77 +1193,106 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
 
             filled = False
 
-            # Strategy 1: Force-click + fill + wait for Telerik autocomplete
+            # Strategy 1: Telerik JavaScript API — most reliable for RadComboBox
+            combo_client_id = known_id.replace("_Input", "")
             try:
-                inp_loc = page.locator(f"#{known_id}")
-                if inp_loc.count():
-                    inp_loc.click(force=True)
-                    page.wait_for_timeout(300)
-                    inp_loc.fill(name)
-                    log.info("P%d: typed %r", player_num, name)
-                    page.wait_for_timeout(2000)   # wait for AJAX autocomplete response
-
-                    # Click the first autocomplete suggestion
-                    clicked_sug = False
-                    for sug_sel in [
-                        "ul.rcbList li.rcbItem",
-                        ".rcbList li.rcbItem",
-                        ".rcbList li",
-                        "[class*='rcbItem']",
-                        "li.rcbItem",
-                    ]:
+                tk_result = page.evaluate(f"""
+                    () => {{
+                        if (typeof $find === 'undefined') return 'no $find';
+                        const combo = $find('{combo_client_id}');
+                        if (!combo) return 'combo not found: {combo_client_id}';
+                        combo.set_text('{name}');
+                        combo.set_value('');   // clear hidden value so server accepts text
+                        return 'Telerik set_text OK: ' + combo.get_text();
+                    }}
+                """)
+                log.info("P%d Telerik API: %s", player_num, tk_result)
+                if "OK" in (tk_result or ""):
+                    page.wait_for_timeout(2000)
+                    # Click the first autocomplete suggestion if one appeared
+                    for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li.rcbItem", "li.rcbItem"]:
                         try:
                             sug = page.locator(sug_sel).first
                             if sug.count():
                                 sug.wait_for(state="visible", timeout=1000)
                                 sug.click()
-                                log.info("P%d: clicked autocomplete suggestion via %r", player_num, sug_sel)
-                                clicked_sug = True
-                                filled = True
+                                log.info("P%d: Telerik autocomplete suggestion clicked", player_num)
                                 break
                         except Exception:
                             continue
+                    filled = True
+            except Exception as ex:
+                log.warning("P%d Telerik API failed: %s", player_num, ex)
 
-                    if not clicked_sug:
-                        # No autocomplete appeared — press Tab to move focus and confirm
-                        inp_loc.press("Tab")
-                        log.info("P%d: no autocomplete suggestion, pressed Tab", player_num)
-                        filled = True
-                else:
-                    log.warning("P%d: id=%r not found; trying generic rcbInput fallback", player_num, known_id)
-                    # Fallback: use positional rcbInput index (0 = P1, idx = Pn)
-                    all_rcb = page.locator(".rcbInput")
-                    n_rcb = all_rcb.count()
-                    log.info("P%d: generic rcbInput count=%d, using index %d", player_num, n_rcb, idx)
-                    if idx < n_rcb:
-                        fb = all_rcb.nth(idx)
-                        fb.click(force=True)
+            # Strategy 2: Scroll into view → force-click → fill → autocomplete
+            if not filled:
+                inp_loc = page.locator(f"#{known_id}")
+                n_inp = inp_loc.count()
+                log.info("P%d: known-id locator count=%d", player_num, n_inp)
+                if n_inp:
+                    try:
+                        inp_loc.scroll_into_view_if_needed()
+                        page.wait_for_timeout(200)
+                        inp_loc.click(force=True)
                         page.wait_for_timeout(300)
-                        fb.fill(name)
+                        inp_loc.fill(name)
+                        log.info("P%d: filled via scroll+force-click: %r", player_num, name)
                         page.wait_for_timeout(2000)
-                        # Try clicking autocomplete suggestion
-                        for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li", "[class*='rcbItem']"]:
+
+                        clicked_sug = False
+                        for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li.rcbItem",
+                                        ".rcbList li", "[class*='rcbItem']"]:
                             try:
                                 sug = page.locator(sug_sel).first
                                 if sug.count():
                                     sug.wait_for(state="visible", timeout=1000)
                                     sug.click()
-                                    log.info("P%d fallback: clicked suggestion", player_num)
-                                    filled = True
+                                    log.info("P%d: clicked autocomplete via %r", player_num, sug_sel)
+                                    clicked_sug = True
                                     break
                             except Exception:
                                 continue
-                        if not filled:
-                            fb.press("Tab")
-                            filled = True
-                            log.info("P%d fallback: pressed Tab", player_num)
-            except Exception as ex:
-                log.warning("P%d strategy 1 failed: %s", player_num, ex)
+                        if not clicked_sug:
+                            inp_loc.press("Tab")
+                            log.info("P%d: Tab pressed (no autocomplete)", player_num)
+                        filled = True
+                    except Exception as ex:
+                        log.warning("P%d strategy 2 failed: %s", player_num, ex)
+                else:
+                    # Positional fallback if known ID missing
+                    all_rcb = page.locator(".rcbInput")
+                    n_rcb = all_rcb.count()
+                    log.warning("P%d: known id not found; rcbInput count=%d, need index %d",
+                                player_num, n_rcb, idx)
+                    if idx < n_rcb:
+                        try:
+                            fb = all_rcb.nth(idx)
+                            fb.scroll_into_view_if_needed()
+                            page.wait_for_timeout(200)
+                            fb.click(force=True)
+                            page.wait_for_timeout(300)
+                            fb.fill(name)
+                            page.wait_for_timeout(2000)
+                            for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li"]:
+                                try:
+                                    sug = page.locator(sug_sel).first
+                                    if sug.count():
+                                        sug.wait_for(state="visible", timeout=1000)
+                                        sug.click()
+                                        filled = True
+                                        break
+                                except Exception:
+                                    continue
+                            if not filled:
+                                fb.press("Tab")
+                                filled = True
+                        except Exception as ex:
+                            log.warning("P%d positional fallback failed: %s", player_num, ex)
 
-            # Strategy 2: Pure JS value injection if force-click failed
+            # Strategy 3: Pure JS value + event injection (last resort)
             if not filled:
                 try:
-                    result = page.evaluate(f"""
+                    js_result = page.evaluate(f"""
                         () => {{
                             const inp = document.getElementById('{known_id}');
                             if (!inp) return 'not found';
@@ -1235,11 +1304,11 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                             return 'JS-injected: ' + inp.value;
                         }}
                     """)
-                    log.info("P%d JS injection: %s", player_num, result)
+                    log.info("P%d JS injection: %s", player_num, js_result)
                     page.wait_for_timeout(1500)
                     filled = True
                 except Exception as ex:
-                    log.warning("P%d strategy 2 JS injection failed: %s", player_num, ex)
+                    log.warning("P%d strategy 3 JS injection failed: %s", player_num, ex)
 
             page.wait_for_timeout(500)
 
@@ -1345,9 +1414,11 @@ def make_reservation(
 
             page.wait_for_load_state("networkidle", timeout=30_000)
             _screenshot(page, "07_confirmation")
+            _dump_html(page, "07_confirmation_html")
 
-            # Extract confirmation number from the page
-            body = page.text_content("body") or ""
+            # Use inner_text (visible text only) to avoid matching JS variable names
+            # like "ErrorID" inside <script> tags which appear in text_content().
+            body = page.evaluate("document.body.innerText") or ""
             conf_match = re.search(
                 r"(?:confirmation|booking|reservation)[:\s#]*([A-Z0-9\-]{4,20})",
                 body,
@@ -1359,16 +1430,17 @@ def make_reservation(
                 else f"LG-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             )
 
-            if any(kw in body.lower() for kw in ["error", "failed", "not available", "sorry"]):
+            # Check for visible error messages (not JS variable names)
+            ERROR_PHRASES = [
+                "unable to reserve", "not available", "already reserved",
+                "invalid player", "booking failed", "cannot be reserved",
+                "sorry", "please try again", "time is not available",
+            ]
+            if any(kw in body.lower() for kw in ERROR_PHRASES):
                 _screenshot(page, "error_booking_failed")
-                err_match = re.search(r"(error[^.]*\.|failed[^.]*\.)", body, re.IGNORECASE)
                 return {
                     "success": False,
-                    "message": (
-                        err_match.group(0)
-                        if err_match
-                        else "Booking failed — see debug_screenshots for details."
-                    ),
+                    "message": f"Booking failed — visible error on confirmation page. See debug_screenshots.",
                 }
 
             return {
