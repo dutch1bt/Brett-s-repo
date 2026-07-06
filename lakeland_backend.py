@@ -508,195 +508,180 @@ def _js_click_next(ctx) -> bool:
         return False
 
 
-def _navigate_teesheet_to(ctx, target: datetime) -> None:
-    """
-    Drive the Lakelands tee-sheet date display to `target`.
-
-    The page shows a date header like "Fri-July 17, 2026" with ◄/► arrows
-    and a Calendar button. Strategy:
-      1. Click Calendar — if a date-picker appears, select the target day.
-      2. Fall back to reading the current date label and clicking ► one day
-         at a time (safe for up to 20 clicks = 3 weeks out).
-    """
-    MAX_DAY_CLICKS = 20
-
-    # Dump the page HTML on first entry so we can inspect the structure
-    _dump_html(ctx, "03e_booking_page_html")
-    _log_clickable_elements(ctx)
-
-    # --- Try the Calendar button first ---
-    cal_clicked = _click_first(
-        ctx,
-        [
-            'button:text-is("Calendar")',
-            'a:text-is("Calendar")',
-            'input[value="Calendar"]',
-            'button:has-text("Calendar")',
-            'a:has-text("Calendar")',
-            '*[value*="Calendar" i]',
-        ],
-        "Calendar button",
-    )
-    if cal_clicked:
-        ctx.wait_for_timeout(800)
-        _screenshot(ctx, "03c_calendar_picker")
-        day_str = str(target.day)
-        day_clicked = _click_first(
-            ctx,
-            [
-                f'td[data-date*="{target.strftime("%Y-%m-%d")}"] a',
-                f'.ui-datepicker-calendar td a:text-is("{day_str}")',
-                f'[class*="calendar" i] td:text-is("{day_str}")',
-                f'[class*="picker" i] td:text-is("{day_str}")',
-                f'td:not([class*="other"]):not([class*="disabled"]) a:text-is("{day_str}")',
-            ],
-            f"calendar day {day_str}",
-        )
-        if day_clicked:
-            ctx.wait_for_load_state("networkidle", timeout=15_000)
-            _screenshot(ctx, "03d_date_selected")
-            return
-
-    # --- Diagnostics: log structure of the navigation area ---
+def _dump_nav_state(ctx, label: str) -> None:
+    """Log a comprehensive snapshot of the tee-sheet navigation state."""
     try:
         info = ctx.evaluate(r"""
             () => {
                 const next = document.getElementById('nextDates');
-                // All anchor doPostBack links on page
-                const pbLinks = [...document.querySelectorAll('a')]
-                    .filter(a => /doPostBack/i.test(a.href || a.getAttribute('onclick') || ''))
-                    .map(a => ({
-                        id: a.id, text: (a.textContent||'').trim().slice(0,20),
-                        href: (a.href||'').slice(0,200),
-                        oc: (a.getAttribute('onclick')||'').slice(0,200),
-                    }))
-                    .slice(0, 30);
-                // Date header text candidates
-                const dateEls = [...document.querySelectorAll('*')]
+                const prev = document.getElementById('prevDates');
+                // All clickable things that look like dates or navigation
+                const dateCells = [...document.querySelectorAll('a,td,th,span,div,input')]
                     .filter(el => {
-                        const t = (el.textContent||'').trim();
-                        return t.length < 80 && /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(t) && /\d{4}/.test(t);
+                        const t = (el.textContent||el.value||'').trim();
+                        const combined = [t, el.id, el.className, el.getAttribute('onclick')||'',
+                                          el.href||''].join(' ');
+                        return /\b\d{1,2}\b/.test(t) && t.length < 30 &&
+                               (el.tagName === 'A' || el.tagName === 'TD' ||
+                                el.getAttribute('onclick') || el.href);
                     })
-                    .map(el => ({tag: el.tagName, id: el.id, cls: (el.className||'').slice(0,40), text: (el.textContent||'').trim().slice(0,60)}))
-                    .slice(0, 10);
+                    .map(el => ({
+                        tag: el.tagName, id: el.id||'',
+                        cls: (el.className||'').slice(0,40),
+                        text: (el.textContent||el.value||'').trim().slice(0,30),
+                        href: (el.href||'').slice(0,150),
+                        oc: (el.getAttribute('onclick')||'').slice(0,150),
+                        vis: el.offsetParent !== null,
+                    }))
+                    .filter(e => e.vis)
+                    .slice(0, 40);
+                const pageText = (document.body && document.body.innerText || '').slice(0, 500);
                 return {
-                    nextDatesHTML: next ? next.outerHTML.slice(0, 800) : 'NOT FOUND',
-                    nextDatesBBox: next ? JSON.stringify(next.getBoundingClientRect()) : null,
-                    pbLinks,
-                    dateEls,
-                    hasDoPostBack: typeof __doPostBack !== 'undefined',
+                    nextHTML: next ? next.outerHTML.slice(0, 400) : 'MISSING',
+                    nextBBox: next ? JSON.stringify(next.getBoundingClientRect()) : null,
+                    prevHTML: prev ? prev.outerHTML.slice(0, 200) : 'MISSING',
+                    dateCells,
+                    pageText,
                 };
             }
         """)
-        log.info("=== NAV DIAGNOSTIC ===")
-        log.info("#nextDates HTML: %s", info['nextDatesHTML'])
-        log.info("#nextDates BBox: %s", info['nextDatesBBox'])
-        log.info("__doPostBack available: %s", info['hasDoPostBack'])
-        log.info("doPostBack links (%d):", len(info['pbLinks']))
-        for lnk in info['pbLinks']:
-            log.info("  id=%r text=%r href=%r oc=%r", lnk['id'], lnk['text'], lnk['href'], lnk['oc'])
-        log.info("Date header candidates:")
-        for d in info['dateEls']:
-            log.info("  <%s> id=%r cls=%r text=%r", d['tag'], d['id'], d['cls'], d['text'])
-        log.info("=== END NAV DIAGNOSTIC ===")
+        log.info("=== NAV STATE [%s] ===", label)
+        log.info("#nextDates: %s  BBox: %s", info['nextHTML'], info['nextBBox'])
+        log.info("#prevDates: %s", info['prevHTML'])
+        log.info("Page text (first 500): %r", info['pageText'])
+        log.info("Visible date-like cells (%d):", len(info['dateCells']))
+        for c in info['dateCells']:
+            log.info("  <%s> id=%r cls=%r text=%r href=%r oc=%r",
+                     c['tag'], c['id'], c['cls'], c['text'], c['href'][:80], c['oc'][:80])
+        log.info("=== END NAV STATE ===")
     except Exception as e:
-        log.warning("Nav diagnostic failed: %s", e)
+        log.warning("_dump_nav_state failed: %s", e)
 
-    # --- Iterate: read date, advance one day ---
-    for click_num in range(MAX_DAY_CLICKS):
-        # Parse the current date from the tee-sheet header
-        current_label = ""
+
+def _navigate_teesheet_to(ctx, target: datetime) -> None:
+    """
+    Drive the Lakelands tee-sheet to show tee times for `target`.
+
+    The site uses a WEEK VIEW: #nextDates / #prevDates advance by one week,
+    and individual day cells within the week are clicked to load that day.
+    Strategy:
+      1. Dump nav state to log the exact HTML so we know what to click.
+      2. Advance weeks with #nextDates until the target date is visible.
+      3. Click the day cell for the target date.
+    """
+    _dump_html(ctx, "03e_booking_page_html")
+    _dump_nav_state(ctx, "initial")
+    _screenshot(ctx, "04a_booking_initial")
+
+    target_date = target.date()
+    day_num = str(target.day)           # "17"
+    day_name_short = target.strftime("%a")   # "Fri"
+    day_name_long  = target.strftime("%A")   # "Friday"
+    date_mmddyyyy  = target.strftime("%m/%d/%Y")
+    date_iso       = target.strftime("%Y-%m-%d")
+
+    def _advance_week() -> bool:
+        """Click #nextDates and wait for page to update. Returns True on success."""
         try:
-            current_label = ctx.evaluate(r"""
-                () => {
-                    const els = [...document.querySelectorAll('*')].filter(el => {
-                        const t = (el.textContent||'').trim();
-                        return t.length < 80 && /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(t) && /\d{4}/.test(t);
-                    });
-                    return els.length ? (els[0].textContent||'').trim() : '';
-                }
-            """) or ""
-        except Exception:
-            pass
-        if click_num == 0:
-            log.info("Current date label on tee sheet: %r", current_label)
-
-        if current_label:
-            clean = re.sub(r"^[A-Za-z]+-\s*", "", current_label).strip()
-            parsed = False
-            for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y",
-                        "%b. %d, %Y", "%B %d,%Y"):
+            loc = ctx.locator('#nextDates')
+            if loc.count():
+                loc.click(force=True)
+                ctx.wait_for_timeout(2500)
                 try:
-                    shown = datetime.strptime(clean, fmt)
-                    parsed = True
-                    log.info("Tee sheet date: %s (target %s)", shown.date(), target.date())
-                    if shown.date() == target.date():
-                        log.info("Reached target date %s", target.strftime("%Y-%m-%d"))
-                        return
-                    if shown.date() > target.date():
-                        log.warning("Overshot target — stopping")
-                        return
-                    break
-                except ValueError:
-                    continue
-            if not parsed:
-                log.info("Could not parse date label: %r", current_label)
-
-        log.info("Advancing date (attempt %d)", click_num + 1)
-
-        # Strategy 1: call __doPostBack directly (most reliable for ASP.NET)
-        navigated = False
-        try:
-            result = ctx.evaluate(r"""
-                () => {
-                    // Try to find an <a> with __doPostBack and 'next' in href/onclick
-                    const a = [...document.querySelectorAll('a')].find(el => {
-                        const combined = (el.href || '') + (el.getAttribute('onclick') || '');
-                        return /next/i.test(combined) && /doPostBack/i.test(combined);
-                    });
-                    if (a) { a.click(); return 'clicked-a:' + (a.href||a.getAttribute('onclick')||'').slice(0,80); }
-
-                    // Try direct __doPostBack with common arg names
-                    if (typeof __doPostBack !== 'undefined') {
-                        // Look for the control target from any doPostBack call on the page
-                        const scripts = document.documentElement.innerHTML;
-                        const m = scripts.match(/__doPostBack\('([^']*next[^']*)'[^)]*\)/i);
-                        if (m) { __doPostBack(m[1], ''); return 'doPostBack:' + m[1]; }
-                        // Fallback: try common control names
-                        __doPostBack('nextDates', '');
-                        return 'doPostBack:nextDates';
-                    }
-                    return null;
-                }
-            """)
-            if result:
-                log.info("Navigation result: %s", result)
-                navigated = True
+                    ctx.wait_for_load_state("networkidle", timeout=8_000)
+                except Exception:
+                    pass
+                log.info("Advanced week via #nextDates")
+                return True
         except Exception as e:
-            log.warning("Navigation JS failed: %s", e)
+            log.warning("_advance_week failed: %s", e)
+        return False
 
-        # Strategy 2: Playwright click on #nextDates children
-        if not navigated:
+    def _select_day() -> bool:
+        """Try every plausible selector to click the target day. Returns True on success."""
+        selectors = [
+            # Exact date in onclick/href (highest confidence)
+            f'[onclick*="{date_mmddyyyy}"]',
+            f'[href*="{date_mmddyyyy}"]',
+            f'[onclick*="{date_iso}"]',
+            f'[href*="{date_iso}"]',
+            # Day number as visible text in a link or table cell
+            f'a:text-is("{day_num}")',
+            f'td:text-is("{day_num}")',
+            f'th:text-is("{day_num}")',
+            # Day name in a link
+            f'a:has-text("{day_name_short}")',
+            f'td:has-text("{day_name_short}")',
+            # Generic "contains day number" with context
+            f'[id*="lnkDate"][onclick*="{day_num}"]',
+            f'[id*="Date_{day_num}"]',
+            f'[id*="day{day_num}" i]',
+        ]
+        for sel in selectors:
             try:
-                child = ctx.locator('#nextDates a, #nextDates button, #nextDates input').first
-                if child.count():
-                    child.click(force=True)
-                    log.info("Clicked child of #nextDates")
-                    navigated = True
+                loc = ctx.locator(sel).first
+                if loc.count() and loc.is_visible():
+                    loc.click()
+                    log.info("Selected day via: %s", sel)
+                    ctx.wait_for_timeout(2000)
+                    try:
+                        ctx.wait_for_load_state("networkidle", timeout=8_000)
+                    except Exception:
+                        pass
+                    return True
             except Exception:
-                pass
+                continue
+        # force-click fallback
+        for sel in selectors[:4]:
+            try:
+                loc = ctx.locator(sel).first
+                if loc.count():
+                    loc.click(force=True)
+                    log.info("Force-selected day via: %s", sel)
+                    ctx.wait_for_timeout(2000)
+                    return True
+            except Exception:
+                continue
+        return False
 
-        if not navigated:
-            log.warning("No navigation method worked on attempt %d", click_num + 1)
-            break
-
-        ctx.wait_for_timeout(2000)
+    def _current_week_contains_target() -> bool:
+        """Return True if the target date appears to be in the currently shown week."""
         try:
-            ctx.wait_for_load_state("networkidle", timeout=8_000)
+            found = ctx.evaluate(f"""
+                () => {{
+                    const body = document.body.innerHTML || '';
+                    // Look for the day number near a month abbreviation or in a date cell
+                    return body.includes('{date_mmddyyyy}') ||
+                           body.includes('{date_iso}') ||
+                           (body.includes('Jul') && body.includes(' {day_num}'));
+                }}
+            """)
+            return bool(found)
         except Exception:
-            pass
+            return False
 
-    log.warning("Could not navigate to %s within %d clicks", target.date(), MAX_DAY_CLICKS)
+    # Advance weeks until the target date is visible (max 4 weeks out)
+    for week_num in range(4):
+        if _current_week_contains_target():
+            log.info("Target date found in current week view (week_num=%d)", week_num)
+            _dump_nav_state(ctx, f"week_{week_num}_target_found")
+            _screenshot(ctx, f"04b_week_{week_num}")
+            if _select_day():
+                _screenshot(ctx, "04c_day_selected")
+                log.info("Successfully navigated to %s", date_iso)
+                return
+            log.warning("Day selection failed after finding week")
+            break
+        log.info("Target not in current view (week %d), advancing...", week_num)
+        if not _advance_week():
+            log.warning("Cannot advance week at week_num=%d", week_num)
+            break
+        _dump_nav_state(ctx, f"after_week_advance_{week_num + 1}")
+
+    # If week-based navigation failed, log final state for diagnosis
+    _dump_nav_state(ctx, "final_failed")
+    _screenshot(ctx, "04d_nav_failed")
+    log.warning("Could not navigate tee sheet to %s", date_iso)
 
 
 # ---------------------------------------------------------------------------
