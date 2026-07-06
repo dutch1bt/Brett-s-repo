@@ -689,6 +689,32 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
             continue
 
     # ------------------------------------------------------------------ #
+    # Strategy 1b: call changeDate() JS directly — most reliable         #
+    # ------------------------------------------------------------------ #
+    try:
+        js_date = f"{target.month}/{target.day}/{target.year}"
+        result = ctx.evaluate(f"""
+            () => {{
+                if (typeof changeDate !== 'undefined') {{
+                    changeDate('{js_date}');
+                    return 'changeDate:{js_date}';
+                }}
+                return null;
+            }}
+        """)
+        if result:
+            log.info("Direct changeDate() call: %s", result)
+            ctx.wait_for_timeout(2500)
+            try:
+                ctx.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:
+                pass
+            _screenshot(ctx, "04b_after_changedate")
+            return
+    except Exception as e:
+        log.warning("changeDate() call failed: %s", e)
+
+    # ------------------------------------------------------------------ #
     # Strategy 2: click a calendar icon / button, then pick the day      #
     # ------------------------------------------------------------------ #
     CAL_SELECTORS = [
@@ -788,13 +814,44 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     """
     slots: list[dict] = []
 
+    # --- Diagnostics: log what the page looks like after navigation ---
+    _screenshot(ctx, "05_teesheet_after_nav")
+    try:
+        page_info = ctx.evaluate(r"""
+            () => {
+                const rows = [...document.querySelectorAll('table tr')];
+                const rowTexts = rows.slice(0, 30).map(r => (r.textContent||'').trim().replace(/\s+/g,' ').slice(0,100));
+                const pageText = (document.body.innerText||'').slice(0, 1000);
+                const timeEls = [...document.querySelectorAll('*')].filter(el => {
+                    const t = (el.textContent||'').trim();
+                    return /\d{1,2}:\d{2}\s*(AM|PM)/i.test(t) && t.length < 50;
+                }).map(el => ({tag: el.tagName, id: el.id, cls:(el.className||'').slice(0,30), text:(el.textContent||'').trim().slice(0,50)})).slice(0,20);
+                return {rowCount: rows.length, rowTexts, pageText, timeEls};
+            }
+        """)
+        log.info("=== SLOT PARSE DIAGNOSTIC ===")
+        log.info("Table rows on page: %d", page_info['rowCount'])
+        log.info("First 30 row texts:")
+        for i, rt in enumerate(page_info['rowTexts']):
+            log.info("  row[%d]: %r", i, rt)
+        log.info("Page text (1000 chars): %r", page_info['pageText'])
+        log.info("Time-pattern elements (%d):", len(page_info['timeEls']))
+        for te in page_info['timeEls']:
+            log.info("  <%s> id=%r cls=%r text=%r", te['tag'], te['id'], te['cls'], te['text'])
+        log.info("=== END SLOT PARSE DIAGNOSTIC ===")
+    except Exception as e:
+        log.warning("Slot diagnostic failed: %s", e)
+
     # Lakelands renders tee times as clickable table rows or links.
     # Each bookable row contains a time string like "7:30 AM".
     # Try table rows first, then fall back to generic clickable containers.
     candidates = ctx.locator("table tr")
-    if candidates.count() <= 1:
+    row_count = candidates.count()
+    log.info("Scanning %d table rows for tee times", row_count)
+    if row_count <= 1:
         # Fall back to div/link-based listing
         candidates = ctx.locator("a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]")
+        log.info("Fell back to link/button scan, count=%d", candidates.count())
 
     for i in range(candidates.count()):
         el = candidates.nth(i)
@@ -815,6 +872,7 @@ def _parse_slots(ctx, players: int) -> list[dict]:
         if not is_clickable:
             continue
 
+        log.info("Found slot: time=%r text=%r", t, text[:80])
         price_match = re.search(r"\$\s*([\d.]+)", text)
         price = float(price_match.group(1)) if price_match else 0.0
         cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
