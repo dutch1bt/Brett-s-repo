@@ -917,6 +917,92 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     return slots
 
 
+def _click_update_player(page: Page, player_num: int) -> bool:
+    """Click the 'Update Player' button (returnPlayer()) to confirm a player selection."""
+    selectors = [
+        "a:has-text('Update Player')",
+        "[onclick*='returnPlayer']",
+        "a[onclick*='returnPlayer']",
+        "input[value*='Update Player' i]",
+        "button:has-text('Update Player')",
+        "span:has-text('Update Player')",
+        "td:has-text('Update Player')",
+        "div:has-text('Update Player')",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count():
+                vis = loc.is_visible()
+                log.info("P%d: Update Player found via %r (visible=%s)", player_num, sel, vis)
+                try:
+                    loc.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                loc.click(force=True)
+                log.info("P%d: clicked Update Player via %r", player_num, sel)
+                return True
+        except Exception as e:
+            log.debug("P%d: Update Player %r failed: %s", player_num, sel, e)
+
+    # Fallback: call returnPlayer() directly in JS
+    try:
+        result = page.evaluate("""
+            () => {
+                if (typeof returnPlayer !== 'undefined') {
+                    returnPlayer();
+                    return 'returnPlayer called';
+                }
+                return 'returnPlayer not defined';
+            }
+        """)
+        log.info("P%d: returnPlayer() JS: %s", player_num, result)
+        if "called" in (result or ""):
+            return True
+    except Exception as e:
+        log.warning("P%d: returnPlayer() JS failed: %s", player_num, e)
+
+    log.warning("P%d: could not click Update Player / call returnPlayer()", player_num)
+    return False
+
+
+def _reexpand_player_selector(page: Page, after_player_num: int) -> None:
+    """Re-expand PlayerSelectorDiv after it collapses following an Update Player click."""
+    try:
+        for sel in [
+            "td:has-text('Select Player')",
+            "a:has-text('Select Player')",
+            "[onclick*='PlayerSelectorDiv']",
+            "[onclick*='unPinDiv']",
+        ]:
+            loc = page.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click()
+                log.info("P%d+: re-expanded player selector via %r", after_player_num, sel)
+                page.wait_for_timeout(800)
+                break
+    except Exception as e:
+        log.debug("Re-expand player selector failed: %s", e)
+
+    # Force-show PlayerSelectorDiv regardless
+    try:
+        page.evaluate("""
+            () => {
+                const div = document.getElementById('PlayerSelectorDiv');
+                if (div) {
+                    div.style.display = 'block';
+                    div.style.visibility = 'visible';
+                    div.style.opacity = '1';
+                }
+                if (typeof unPinDiv !== 'undefined') {
+                    try { unPinDiv('PlayerSelectorDiv', 'PlayerSelectorPinLink'); } catch(e) {}
+                }
+            }
+        """)
+    except Exception:
+        pass
+
+
 def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) -> None:
     """
     Fill in the 'Book Tee Time' modal that appears after clicking a time slot.
@@ -1302,10 +1388,36 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                 except Exception as ex:
                     log.warning("P%d strategy 3 JS injection failed: %s", player_num, ex)
 
-            page.wait_for_timeout(500)
+            # After filling this player, click "Update Player" (returnPlayer()) to confirm.
+            # Jonas Club Software adds one player at a time: fill name → click Update Player
+            # → the page refreshes and PlayerSelectorDiv is ready for the next player.
+            page.wait_for_timeout(1000)
+            _click_update_player(page, player_num)
+
+            # Re-expand PlayerSelectorDiv for the next player (it may have collapsed)
+            if idx < len(player_names) - 1:
+                page.wait_for_timeout(1500)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=6_000)
+                except Exception:
+                    pass
+                _reexpand_player_selector(page, player_num)
 
     _screenshot(page, "06_modal_filled")
     _dump_html(page, "06_modal_filled_html")
+
+    # Final "Update Player" attempt — covers the case where the loop above
+    # didn't click it for the last player, or the form submits all players at once.
+    log.info("Final Update Player / returnPlayer() attempt after all players filled")
+    _click_update_player(page, 99)
+
+    page.wait_for_timeout(3000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)
+    except Exception:
+        pass
+    _screenshot(page, "06b_after_update_player")
+    _dump_html(page, "06b_after_update_player_html")
 
 
 # ---------------------------------------------------------------------------
@@ -1387,91 +1499,23 @@ def make_reservation(
                 time_cell.click(force=True)
                 log.info("Force-clicked time cell (no Reserve link visible in row)")
 
-            # Fill the "Book Tee Time" modal (party size + player names P2–P4)
+            # Fill the booking modal (party size + player names P2–P4).
+            # _fill_booking_modal now also clicks "Update Player" (returnPlayer())
+            # which is the actual Jonas Club Software submit mechanism.
             _fill_booking_modal(page, party_size, player_names)
 
-            # --- Find and log ALL potential submit candidates before clicking ---
+            # Wait for the booking to process after returnPlayer() was called
             try:
-                candidates = page.evaluate(r"""
-                    () => {
-                        const kw = /\b(book|save|submit|confirm|reserve|ok|done|add)\b/i;
-                        return [...document.querySelectorAll('a,button,input,div,span')]
-                            .filter(el => {
-                                const t = (el.textContent||el.value||'').trim();
-                                const oc = el.getAttribute('onclick')||'';
-                                const id = el.id||'';
-                                return kw.test(t) || kw.test(oc) || kw.test(id);
-                            })
-                            .map(el => ({
-                                tag: el.tagName, id: el.id,
-                                text: (el.textContent||el.value||'').trim().slice(0,40),
-                                onclick: (el.getAttribute('onclick')||'').slice(0,100),
-                                vis: el.offsetParent !== null,
-                            }));
-                    }
-                """)
-                log.info("Submit candidates (%d):", len(candidates))
-                for c in candidates:
-                    log.info("  <%s> id=%r text=%r onclick=%r vis=%s",
-                             c['tag'], c['id'], c['text'][:30], c['onclick'][:80], c['vis'])
-            except Exception as e:
-                log.warning("Submit candidate scan failed: %s", e)
-
-            # Submit the booking form — try many selectors; log the one that works.
-            # The Axis dialog submit is typically an <a> or <div> with onclick.
-            submit_selectors = [
-                # Axis dialog save icon (common Jonas Club Software pattern)
-                '#AxisDialogTitleBarSaveIcon',
-                # onclick-based (most reliable for ASP.NET pages)
-                '[onclick*="submitBook" i]',
-                '[onclick*="BookNow" i]',
-                '[onclick*="ConfirmBook" i]',
-                '[onclick*="SaveBook" i]',
-                '[onclick*="SubmitRes" i]',
-                'a[onclick*="Save"]',
-                'a[onclick*="Book"]',
-                # Text-based
-                'a:has-text("Book Now")',
-                'a:has-text("Book Tee Time")',
-                'a:has-text("Save")',
-                'a:has-text("Confirm")',
-                'a:has-text("Done")',
-                'a:has-text("OK")',
-                'button:has-text("Book")',
-                'button:has-text("Save")',
-                'button:has-text("Confirm")',
-                # Value-based form inputs
-                'input[value*="Confirm" i]',
-                'input[value*="Book" i]',
-                'input[value*="Reserve" i]',
-                'input[value*="Submit" i]',
-                'input[value*="Save" i]',
-                'input[type="submit"]',
-                'button[type="submit"]',
-            ]
-            submit_clicked = _click_first(page, submit_selectors, "booking submit button")
-            if not submit_clicked:
-                log.warning("No visible submit button found — trying Enter key fallback")
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(1000)
-                # One more attempt with force=True on any candidate
-                for sel in ['input[value*="Book" i]', 'a[onclick*="Save"]',
-                            'a[onclick*="Book"]', '[onclick*="submitBook" i]']:
-                    loc = page.locator(sel).first
-                    if loc.count():
-                        log.info("Force-clicking submit candidate: %r", sel)
-                        loc.click(force=True)
-                        break
-
-            page.wait_for_load_state("networkidle", timeout=30_000)
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except Exception:
+                pass
             _screenshot(page, "07_confirmation")
-            conf_html = page.content()
             _dump_html(page, "07_confirmation_html")
 
-            # Use inner_text (visible text only) to avoid matching JS variable names
-            # like "ErrorID" inside <script> tags which appear in text_content().
+            # Use innerText (visible text only) — avoids matching JS variable names
+            # like "ErrorID" inside <script> tags that appear in text_content().
             body = page.evaluate("document.body.innerText") or ""
-            log.info("Confirmation page innerText (500): %r", body[:500])
+            log.info("Confirmation page innerText (800): %r", body[:800])
 
             conf_match = re.search(
                 r"(?:confirmation|booking|reservation)[:\s#]*([A-Z0-9\-]{4,20})",
@@ -1497,15 +1541,17 @@ def make_reservation(
                     "message": f"Booking failed — visible error on page. See debug_screenshots.",
                 }
 
-            # If the booking dialog is still open (Close button still present) and
-            # the tee slot still shows "Reserve", the submit didn't go through.
-            if "Book Tee Time" in body and "Reserve" in body and not submit_clicked:
-                _screenshot(page, "error_submit_not_sent")
+            # Detect if the booking dialog is still open (Update Player didn't submit).
+            # Key signal: page still shows "Select Player" AND "Update Player" together,
+            # meaning we're still on the player-selection screen with no confirmation.
+            if "Select Player" in body and "Update Player" in body and "confirmation" not in body.lower():
+                _screenshot(page, "error_still_on_player_selection")
                 return {
                     "success": False,
                     "message": (
-                        "Submit button not found — booking dialog still open. "
-                        "Check debug_screenshots for the form state and submit candidates."
+                        "returnPlayer() / Update Player was called but page still shows "
+                        "player selection — booking not confirmed. "
+                        "Check debug_screenshots/06b_after_update_player* for page state."
                     ),
                 }
 
