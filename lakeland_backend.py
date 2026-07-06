@@ -929,9 +929,8 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
       - P2–P4:      additional player name fields
       - Send Confirmations: checkbox (leave checked)
     """
-    # Wait for the page to settle after clicking Reserve, then screenshot + dump
-    # to capture whatever booking form/modal appeared.
-    page.wait_for_timeout(2000)
+    # Wait for the booking panel to settle after clicking Reserve.
+    page.wait_for_timeout(3000)
     try:
         page.wait_for_load_state("networkidle", timeout=8_000)
     except Exception:
@@ -939,71 +938,112 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
     _screenshot(page, "05_after_reserve_click")
     _dump_html(page, "05_after_reserve_html")
 
-    # Log visible selects and inputs so we can see the booking form structure
+    # --- Comprehensive diagnostic: find ALL visible interactive elements ---
     try:
         form_info = page.evaluate(r"""
             () => {
-                const vis = el => el.offsetParent !== null;
-                const selects = [...document.querySelectorAll('select')].filter(vis).map(s => ({
-                    id: s.id, name: s.name,
-                    options: [...s.options].map(o => o.text).slice(0, 10),
+                const vis = el => {
+                    if (!el.offsetParent) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                };
+                // All selects (visible or not) with party-size options
+                const allSelects = [...document.querySelectorAll('select')].map(s => ({
+                    id: s.id, name: s.name, vis: vis(s),
+                    options: [...s.options].map(o => o.text).slice(0, 8),
                 }));
-                const inputs = [...document.querySelectorAll('input,textarea')].filter(vis).map(i => ({
-                    type: i.type, id: i.id, name: i.name, value: i.value.slice(0, 30),
-                    placeholder: i.placeholder,
+                // All visible inputs including Telerik rcbInput
+                const inputs = [...document.querySelectorAll(
+                    'input[type=text], input[type=search], .rcbInput, [class*=rcbInput]'
+                )].map(i => ({
+                    type: i.type, id: i.id, name: i.name,
+                    cls: (i.className||'').slice(0,40),
+                    value: i.value.slice(0,30), vis: vis(i),
                 }));
-                const pageText = (document.body.innerText || '').slice(0, 800);
-                return {selects, inputs, pageText};
+                // Visible buttons / links that might be the Book action
+                const btns = [...document.querySelectorAll(
+                    'input[type=submit],input[type=button],button,[onclick]'
+                )].filter(vis).map(b => ({
+                    tag: b.tagName, id: b.id,
+                    text: (b.textContent||b.value||'').trim().slice(0,40),
+                    onclick: (b.getAttribute('onclick')||'').slice(0,80),
+                })).slice(0,20);
+                const pageText = (document.body.innerText||'').slice(0,1500);
+                return {allSelects, inputs, btns, pageText};
             }
         """)
         log.info("=== BOOKING FORM STATE ===")
-        log.info("Visible selects (%d): %s", len(form_info['selects']), form_info['selects'])
-        log.info("Visible inputs (%d): %s", len(form_info['inputs']), form_info['inputs'])
-        log.info("Page text (800): %r", form_info['pageText'])
+        log.info("All selects (%d):", len(form_info['allSelects']))
+        for s in form_info['allSelects']:
+            log.info("  select id=%r vis=%s opts=%s", s['id'], s['vis'], s['options'])
+        log.info("All inputs (incl rcbInput) (%d):", len(form_info['inputs']))
+        for inp in form_info['inputs']:
+            log.info("  input id=%r cls=%r val=%r vis=%s", inp['id'], inp['cls'], inp['value'], inp['vis'])
+        log.info("Visible buttons (%d):", len(form_info['btns']))
+        for b in form_info['btns']:
+            log.info("  btn <%s> id=%r text=%r onclick=%r", b['tag'], b['id'], b['text'], b['onclick'])
+        log.info("Page text (1500): %r", form_info['pageText'])
         log.info("=== END BOOKING FORM STATE ===")
     except Exception as e:
         log.warning("Booking form diagnostic failed: %s", e)
 
-    # Party Size — try the visible select that contains party-size options.
-    # Jonas Club Software uses a select with options: Single, Twosome, Threesome, Foursome.
-    party_sel = page.locator("select").filter(has_text=re.compile(
-        r"Single|Twosome|Threesome|Foursome", re.IGNORECASE
-    ))
-    if party_sel.count():
-        party_sel.first.select_option(label=party_size)
-        log.info("Set Party Size to: %s", party_size)
-    else:
-        selects = page.locator("select")
-        for i in range(selects.count()):
-            try:
-                opts = selects.nth(i).inner_text()
-                if "single" in opts.lower():
-                    selects.nth(i).select_option(label=party_size)
-                    log.info("Set Party Size to %s (fallback selector)", party_size)
-                    break
-            except Exception:
-                continue
+    # --- Party Size ---
+    # The tee-sheet filter <select drpGroupSize> is in the DOM but hidden after the
+    # booking panel opens. Force-set it via JavaScript regardless of visibility, then
+    # also try the visible select fallback.
+    try:
+        result = page.evaluate("""
+            ([party]) => {
+                const partyNorm = party.toLowerCase();
+                for (const sel of document.querySelectorAll('select')) {
+                    const opts = [...sel.options];
+                    const match = opts.find(o => o.text.toLowerCase() === partyNorm);
+                    if (match) {
+                        sel.value = match.value;
+                        ['change','input'].forEach(evt =>
+                            sel.dispatchEvent(new Event(evt, {bubbles: true})));
+                        return 'JS-set party size on ' + (sel.id || 'unnamed select');
+                    }
+                }
+                return 'party size select not found';
+            }
+        """, [party_size])
+        log.info("Party size JS: %s", result)
+    except Exception as e:
+        log.warning("JS party size set failed: %s", e)
+    page.wait_for_timeout(1000)
 
-    page.wait_for_timeout(500)
-
-    # P1 is auto-filled with member name — skip it.
-    # Fill additional players if provided (P2 onward).
+    # --- Player names ---
+    # Jonas Club Software uses Telerik RadComboBox for player selection.
+    # The input inside each combo has class "rcbInput" and an id ending in "_Input".
+    # P1 is auto-filled with the member's name; we fill P2 onward.
     if len(player_names) > 1:
-        name_inputs = page.locator(
-            'input[type="text"][id*="player" i], '
-            'input[type="text"][id*="Player" i], '
-            'input[type="text"][placeholder*="player" i], '
-            'input[type="text"][id*="Combo" i]'
+        # Try Telerik inputs first, then fall back to standard text inputs
+        player_input_sel = (
+            ".rcbInput, [class*='rcbInput'], "
+            "input[id*='PlayerName'][id*='Input'], "
+            "input[id*='PCombo'][id*='Input'], "
+            "input[id*='Player'][type='text'][id*='Combo']"
         )
+        name_inputs = page.locator(player_input_sel)
+        n_found = name_inputs.count()
+        log.info("Player name inputs found: %d (selector=%r)", n_found, player_input_sel)
+        filled = 0
         for idx, name in enumerate(player_names[1:], start=1):
-            if idx < name_inputs.count():
+            if idx < n_found:
                 inp = name_inputs.nth(idx)
                 try:
-                    if not inp.input_value():
-                        inp.fill(name)
-                        log.info("Filled P%d with: %s", idx + 1, name)
-                except Exception:
-                    pass
+                    inp.click()
+                    inp.fill(name)
+                    # Wait for autocomplete and dismiss it (press Escape or Tab)
+                    page.wait_for_timeout(500)
+                    inp.press("Escape")
+                    log.info("Filled P%d with: %s", idx + 1, name)
+                    filled += 1
+                except Exception as ex:
+                    log.warning("Could not fill P%d (%s): %s", idx + 1, name, ex)
+        if filled == 0:
+            log.warning("No player name inputs found/filled — booking may proceed with just P1")
 
     _screenshot(page, "06_modal_filled")
 
