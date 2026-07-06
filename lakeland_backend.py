@@ -562,12 +562,11 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
     """
     Drive the Lakelands tee-sheet to show tee times for `target`.
 
-    The site uses a WEEK VIEW: #nextDates / #prevDates advance by one week,
-    and individual day cells within the week are clicked to load that day.
-    Strategy:
-      1. Dump nav state to log the exact HTML so we know what to click.
-      2. Advance weeks with #nextDates until the target date is visible.
-      3. Click the day cell for the target date.
+    Strategy (in order):
+      1. Find any date input field and type the date directly — fastest.
+      2. Find and click a calendar icon/button, then pick the day.
+      3. Fall back to week-view navigation: #nextDates until target week
+         is shown, then click the day cell.
     """
     _dump_html(ctx, "03e_booking_page_html")
     _dump_nav_state(ctx, "initial")
@@ -660,6 +659,96 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
         except Exception:
             return False
 
+    # ------------------------------------------------------------------ #
+    # Strategy 1: fill a date text/input field directly                  #
+    # ------------------------------------------------------------------ #
+    DATE_INPUT_SELECTORS = [
+        'input[id*="date" i][type="text"]',
+        'input[name*="date" i][type="text"]',
+        'input[class*="date" i][type="text"]',
+        'input[id*="Date" i]:not([type="hidden"]):not([type="checkbox"])',
+        'input[placeholder*="date" i]',
+        'input[placeholder*="mm/dd" i]',
+    ]
+    for sel in DATE_INPUT_SELECTORS:
+        try:
+            loc = ctx.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.triple_click()
+                loc.fill(date_mmddyyyy)
+                loc.press("Enter")
+                log.info("Filled date input %r with %s", sel, date_mmddyyyy)
+                ctx.wait_for_timeout(2000)
+                try:
+                    ctx.wait_for_load_state("networkidle", timeout=8_000)
+                except Exception:
+                    pass
+                _screenshot(ctx, "04b_after_date_input")
+                return
+        except Exception:
+            continue
+
+    # ------------------------------------------------------------------ #
+    # Strategy 2: click a calendar icon / button, then pick the day      #
+    # ------------------------------------------------------------------ #
+    CAL_SELECTORS = [
+        'img[src*="cal" i]',
+        'img[alt*="cal" i]',
+        'input[type="image"][src*="cal" i]',
+        '[id*="calendarIcon" i]',
+        '[id*="cal_icon" i]',
+        '[class*="cal-icon" i]',
+        '[class*="calendar-icon" i]',
+        '[class*="datepicker" i][id*="btn" i]',
+        'button:has-text("Calendar")',
+        'a:has-text("Calendar")',
+        'input[value="Calendar"]',
+        '[title*="Calendar" i]',
+        '[aria-label*="calendar" i]',
+    ]
+    for sel in CAL_SELECTORS:
+        try:
+            loc = ctx.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click()
+                log.info("Clicked calendar trigger: %s", sel)
+                ctx.wait_for_timeout(1000)
+                _screenshot(ctx, "04b_calendar_open")
+                # Try to click the target day in whatever picker appeared
+                day_str = str(target.day)
+                picker_day_selectors = [
+                    f'td[data-date*="{date_iso}"] a',
+                    f'td[data-date*="{date_iso}"]',
+                    f'.ui-datepicker-calendar td a:text-is("{day_str}")',
+                    f'[class*="datepicker"] td a:text-is("{day_str}")',
+                    f'[class*="calendar"] td a:text-is("{day_str}")',
+                    f'td:not([class*="other"]):not([class*="disabled"]):not([class*="gray"]) a:text-is("{day_str}")',
+                    f'a:text-is("{day_str}")',
+                    f'td:text-is("{day_str}")',
+                ]
+                for psel in picker_day_selectors:
+                    try:
+                        ploc = ctx.locator(psel).first
+                        if ploc.count() and ploc.is_visible():
+                            ploc.click()
+                            log.info("Picked day via: %s", psel)
+                            ctx.wait_for_timeout(2000)
+                            try:
+                                ctx.wait_for_load_state("networkidle", timeout=8_000)
+                            except Exception:
+                                pass
+                            _screenshot(ctx, "04c_day_selected")
+                            return
+                    except Exception:
+                        continue
+                log.warning("Calendar opened but could not pick day %s", day_str)
+                break
+        except Exception:
+            continue
+
+    # ------------------------------------------------------------------ #
+    # Strategy 3: week-view navigation (advance weeks, click day cell)   #
+    # ------------------------------------------------------------------ #
     # Advance weeks until the target date is visible (max 4 weeks out)
     for week_num in range(4):
         if _current_week_contains_target():
