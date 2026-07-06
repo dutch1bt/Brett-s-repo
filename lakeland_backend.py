@@ -1031,30 +1031,22 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
     except Exception as e:
         log.warning("JS party size set failed: %s", e)
 
-    # Explicitly call __doPostBack for drpGroupSize so the server adds P3/P4 player rows.
+    # Trigger the party size change via Playwright's native select_option so that
+    # the browser fires the element's own onchange handler (which calls __doPostBack
+    # internally). Calling __doPostBack directly from page.evaluate() fails because
+    # the ASP.NET AJAX library is declared in strict mode.
     page.wait_for_timeout(500)
     try:
-        pb = page.evaluate("""
-            () => {
-                // ASP.NET UniqueID uses $ separators, but select.name already has them
-                const sel = document.getElementById(
-                    'masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize');
-                const target = sel ? sel.name : 'masterPageUC$MPCA17$ctl04$ctrl_Booking$drpGroupSize';
-                if (typeof __doPostBack !== 'undefined') {
-                    __doPostBack(target, '');
-                    return 'doPostBack(' + target + ')';
-                }
-                return 'doPostBack not defined';
-            }
-        """)
-        log.info("Party size postback: %s", pb)
+        party_sel = page.locator("#masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize")
+        party_sel.select_option(label=party_size, force=True)
+        log.info("Native select_option %r on drpGroupSize", party_size)
         try:
             page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:
             pass
         page.wait_for_timeout(2000)
     except Exception as e:
-        log.warning("doPostBack for drpGroupSize failed: %s", e)
+        log.warning("Native select_option failed: %s", e)
 
     # Wait for P3/P4 player inputs to appear (up to 8 s, poll every 500 ms)
     for _ in range(16):
@@ -1398,27 +1390,89 @@ def make_reservation(
             # Fill the "Book Tee Time" modal (party size + player names P2–P4)
             _fill_booking_modal(page, party_size, player_names)
 
-            # Submit the modal
-            _click_first(
-                page,
-                [
-                    '[value*="Confirm" i]',
-                    '[value*="Reserve" i]',
-                    '[value*="Book" i]',
-                    '[value*="Submit" i]',
-                    'input[type="submit"]',
-                    'button[type="submit"]',
-                ],
-                "confirm button",
-            )
+            # --- Find and log ALL potential submit candidates before clicking ---
+            try:
+                candidates = page.evaluate(r"""
+                    () => {
+                        const kw = /\b(book|save|submit|confirm|reserve|ok|done|add)\b/i;
+                        return [...document.querySelectorAll('a,button,input,div,span')]
+                            .filter(el => {
+                                const t = (el.textContent||el.value||'').trim();
+                                const oc = el.getAttribute('onclick')||'';
+                                const id = el.id||'';
+                                return kw.test(t) || kw.test(oc) || kw.test(id);
+                            })
+                            .map(el => ({
+                                tag: el.tagName, id: el.id,
+                                text: (el.textContent||el.value||'').trim().slice(0,40),
+                                onclick: (el.getAttribute('onclick')||'').slice(0,100),
+                                vis: el.offsetParent !== null,
+                            }));
+                    }
+                """)
+                log.info("Submit candidates (%d):", len(candidates))
+                for c in candidates:
+                    log.info("  <%s> id=%r text=%r onclick=%r vis=%s",
+                             c['tag'], c['id'], c['text'][:30], c['onclick'][:80], c['vis'])
+            except Exception as e:
+                log.warning("Submit candidate scan failed: %s", e)
+
+            # Submit the booking form — try many selectors; log the one that works.
+            # The Axis dialog submit is typically an <a> or <div> with onclick.
+            submit_selectors = [
+                # Axis dialog save icon (common Jonas Club Software pattern)
+                '#AxisDialogTitleBarSaveIcon',
+                # onclick-based (most reliable for ASP.NET pages)
+                '[onclick*="submitBook" i]',
+                '[onclick*="BookNow" i]',
+                '[onclick*="ConfirmBook" i]',
+                '[onclick*="SaveBook" i]',
+                '[onclick*="SubmitRes" i]',
+                'a[onclick*="Save"]',
+                'a[onclick*="Book"]',
+                # Text-based
+                'a:has-text("Book Now")',
+                'a:has-text("Book Tee Time")',
+                'a:has-text("Save")',
+                'a:has-text("Confirm")',
+                'a:has-text("Done")',
+                'a:has-text("OK")',
+                'button:has-text("Book")',
+                'button:has-text("Save")',
+                'button:has-text("Confirm")',
+                # Value-based form inputs
+                'input[value*="Confirm" i]',
+                'input[value*="Book" i]',
+                'input[value*="Reserve" i]',
+                'input[value*="Submit" i]',
+                'input[value*="Save" i]',
+                'input[type="submit"]',
+                'button[type="submit"]',
+            ]
+            submit_clicked = _click_first(page, submit_selectors, "booking submit button")
+            if not submit_clicked:
+                log.warning("No visible submit button found — trying Enter key fallback")
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(1000)
+                # One more attempt with force=True on any candidate
+                for sel in ['input[value*="Book" i]', 'a[onclick*="Save"]',
+                            'a[onclick*="Book"]', '[onclick*="submitBook" i]']:
+                    loc = page.locator(sel).first
+                    if loc.count():
+                        log.info("Force-clicking submit candidate: %r", sel)
+                        loc.click(force=True)
+                        break
 
             page.wait_for_load_state("networkidle", timeout=30_000)
             _screenshot(page, "07_confirmation")
+            conf_html = page.content()
             _dump_html(page, "07_confirmation_html")
 
             # Use inner_text (visible text only) to avoid matching JS variable names
             # like "ErrorID" inside <script> tags which appear in text_content().
             body = page.evaluate("document.body.innerText") or ""
+            log.info("Confirmation page innerText (500): %r", body[:500])
+
             conf_match = re.search(
                 r"(?:confirmation|booking|reservation)[:\s#]*([A-Z0-9\-]{4,20})",
                 body,
@@ -1440,7 +1494,19 @@ def make_reservation(
                 _screenshot(page, "error_booking_failed")
                 return {
                     "success": False,
-                    "message": f"Booking failed — visible error on confirmation page. See debug_screenshots.",
+                    "message": f"Booking failed — visible error on page. See debug_screenshots.",
+                }
+
+            # If the booking dialog is still open (Close button still present) and
+            # the tee slot still shows "Reserve", the submit didn't go through.
+            if "Book Tee Time" in body and "Reserve" in body and not submit_clicked:
+                _screenshot(page, "error_submit_not_sent")
+                return {
+                    "success": False,
+                    "message": (
+                        "Submit button not found — booking dialog still open. "
+                        "Check debug_screenshots for the form state and submit candidates."
+                    ),
                 }
 
             return {
