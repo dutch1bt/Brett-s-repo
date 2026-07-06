@@ -929,16 +929,16 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
       - P2–P4:      additional player name fields
       - Send Confirmations: checkbox (leave checked)
     """
-    # Wait for the booking panel to settle after clicking Reserve.
-    page.wait_for_timeout(3000)
+    # Wait longer for the booking panel and AJAX to fully initialize.
+    page.wait_for_timeout(5000)
     try:
-        page.wait_for_load_state("networkidle", timeout=8_000)
+        page.wait_for_load_state("networkidle", timeout=10_000)
     except Exception:
         pass
     _screenshot(page, "05_after_reserve_click")
     _dump_html(page, "05_after_reserve_html")
 
-    # --- Comprehensive diagnostic: find ALL visible interactive elements ---
+    # --- Comprehensive diagnostic: find ALL interactive elements + PlayerSelectorDiv state ---
     try:
         form_info = page.evaluate(r"""
             () => {
@@ -947,20 +947,17 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                     const r = el.getBoundingClientRect();
                     return r.width > 0 && r.height > 0;
                 };
-                // All selects (visible or not) with party-size options
                 const allSelects = [...document.querySelectorAll('select')].map(s => ({
                     id: s.id, name: s.name, vis: vis(s),
                     options: [...s.options].map(o => o.text).slice(0, 8),
                 }));
-                // All visible inputs including Telerik rcbInput
                 const inputs = [...document.querySelectorAll(
                     'input[type=text], input[type=search], .rcbInput, [class*=rcbInput]'
                 )].map(i => ({
                     type: i.type, id: i.id, name: i.name,
-                    cls: (i.className||'').slice(0,40),
+                    cls: (i.className||'').slice(0,60),
                     value: i.value.slice(0,30), vis: vis(i),
                 }));
-                // Visible buttons / links that might be the Book action
                 const btns = [...document.querySelectorAll(
                     'input[type=submit],input[type=button],button,[onclick]'
                 )].filter(vis).map(b => ({
@@ -968,11 +965,28 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                     text: (b.textContent||b.value||'').trim().slice(0,40),
                     onclick: (b.getAttribute('onclick')||'').slice(0,80),
                 })).slice(0,20);
+                // Check PlayerSelectorDiv visibility
+                const psd = document.getElementById('PlayerSelectorDiv');
+                const psdInfo = psd ? {
+                    display: window.getComputedStyle(psd).display,
+                    visibility: window.getComputedStyle(psd).visibility,
+                    offsetParent: psd.offsetParent ? 'yes' : 'no',
+                } : 'NOT IN DOM';
+                // Log unPinDiv trigger elements
+                const pinLinks = [...document.querySelectorAll('[onclick*="PlayerSelectorDiv"],[onclick*="unPinDiv"]')]
+                    .map(el => ({
+                        tag: el.tagName, id: el.id,
+                        text: (el.textContent||'').trim().slice(0,30),
+                        onclick: (el.getAttribute('onclick')||'').slice(0,80),
+                        vis: vis(el),
+                    }));
                 const pageText = (document.body.innerText||'').slice(0,1500);
-                return {allSelects, inputs, btns, pageText};
+                return {allSelects, inputs, btns, psdInfo, pinLinks, pageText};
             }
         """)
         log.info("=== BOOKING FORM STATE ===")
+        log.info("PlayerSelectorDiv: %s", form_info.get('psdInfo'))
+        log.info("unPinDiv trigger elements (%d): %s", len(form_info.get('pinLinks', [])), form_info.get('pinLinks'))
         log.info("All selects (%d):", len(form_info['allSelects']))
         for s in form_info['allSelects']:
             log.info("  select id=%r vis=%s opts=%s", s['id'], s['vis'], s['options'])
@@ -988,9 +1002,6 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.warning("Booking form diagnostic failed: %s", e)
 
     # --- Party Size ---
-    # The tee-sheet filter <select drpGroupSize> is in the DOM but hidden after the
-    # booking panel opens. Force-set it via JavaScript regardless of visibility, then
-    # also try the visible select fallback.
     try:
         result = page.evaluate("""
             ([party]) => {
@@ -1013,39 +1024,227 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.warning("JS party size set failed: %s", e)
     page.wait_for_timeout(1000)
 
+    # --- Reveal PlayerSelectorDiv ---
+    # After clicking Reserve the player section is hidden. We:
+    #   1. Try clicking the "Select Player" trigger element (may now be visible)
+    #   2. Call unPinDiv('PlayerSelectorDiv', ...) directly via JS
+    #   3. Force-show the div and all hidden ancestors
+    try:
+        # Step 1: click the visible "Select Player" TD/link if it appeared
+        for sel in [
+            "td:has-text('Select Player')",
+            "a:has-text('Select Player')",
+            "span:has-text('Select Player')",
+            "[onclick*='PlayerSelectorDiv']",
+            "[onclick*='unPinDiv']",
+        ]:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() and loc.is_visible():
+                    loc.click()
+                    log.info("Clicked Select Player trigger: %r", sel)
+                    page.wait_for_timeout(1000)
+                    break
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning("Select Player trigger click failed: %s", e)
+
+    try:
+        result = page.evaluate("""
+            () => {
+                const msgs = [];
+
+                // 1. Call the site's unPinDiv toggle if available
+                if (typeof unPinDiv !== 'undefined') {
+                    try {
+                        unPinDiv('PlayerSelectorDiv', 'PlayerSelectorPinLink');
+                        msgs.push('unPinDiv called');
+                    } catch(e) { msgs.push('unPinDiv threw: ' + e); }
+                } else {
+                    msgs.push('unPinDiv not defined');
+                }
+
+                // 2. Force-show PlayerSelectorDiv and its hidden ancestor chain
+                const div = document.getElementById('PlayerSelectorDiv');
+                if (div) {
+                    div.style.display = 'block';
+                    div.style.visibility = 'visible';
+                    div.style.opacity = '1';
+                    let el = div.parentElement;
+                    let forced = 0;
+                    while (el && el !== document.body) {
+                        const cs = window.getComputedStyle(el);
+                        if (cs.display === 'none') { el.style.display = 'block'; forced++; }
+                        if (cs.visibility === 'hidden') { el.style.visibility = 'visible'; forced++; }
+                        el = el.parentElement;
+                    }
+                    msgs.push('PlayerSelectorDiv shown; ancestors forced: ' + forced);
+                } else {
+                    msgs.push('PlayerSelectorDiv not in DOM');
+                    // Fallback: walk up from each rcbInput and show hidden parents
+                    let shown = 0;
+                    [...document.querySelectorAll('.rcbInput')].forEach(inp => {
+                        let el = inp;
+                        while (el && el !== document.body) {
+                            if (window.getComputedStyle(el).display === 'none') {
+                                el.style.display = 'block';
+                                shown++;
+                            }
+                            el = el.parentElement;
+                        }
+                    });
+                    msgs.push('forced rcbInput ancestor chain: ' + shown + ' hidden elements shown');
+                }
+
+                // 3. Also show any Telerik combo wrapper that wraps .rcbInput
+                [...document.querySelectorAll('.RadComboBox,.rcbInput')].forEach(el => {
+                    let p = el;
+                    while (p && p !== document.body) {
+                        if (window.getComputedStyle(p).display === 'none') p.style.display = 'block';
+                        if (window.getComputedStyle(p).visibility === 'hidden') p.style.visibility = 'visible';
+                        p = p.parentElement;
+                    }
+                });
+
+                return msgs.join(' | ');
+            }
+        """)
+        log.info("Reveal PlayerSelectorDiv: %s", result)
+        page.wait_for_timeout(1500)
+        _screenshot(page, "05b_after_player_div_reveal")
+    except Exception as e:
+        log.warning("Could not reveal PlayerSelectorDiv: %s", e)
+
     # --- Player names ---
-    # Jonas Club Software uses Telerik RadComboBox for player selection.
-    # The input inside each combo has class "rcbInput" and an id ending in "_Input".
-    # P1 is auto-filled with the member's name; we fill P2 onward.
+    # P1 is auto-filled with the member's name; fill P2 onward.
+    # Telerik RadComboBox: ID pattern ctl0{N}_PlayerSelectorctrl_PCombo_PlayerName_Input
     if len(player_names) > 1:
-        # Try Telerik inputs first, then fall back to standard text inputs
-        player_input_sel = (
-            ".rcbInput, [class*='rcbInput'], "
-            "input[id*='PlayerName'][id*='Input'], "
-            "input[id*='PCombo'][id*='Input'], "
-            "input[id*='Player'][type='text'][id*='Combo']"
-        )
-        name_inputs = page.locator(player_input_sel)
-        n_found = name_inputs.count()
-        log.info("Player name inputs found: %d (selector=%r)", n_found, player_input_sel)
-        filled = 0
         for idx, name in enumerate(player_names[1:], start=1):
-            if idx < n_found:
-                inp = name_inputs.nth(idx)
+            player_num = idx + 1   # 2, 3, 4
+            known_id = (
+                f"masterPageUC_MPCA17_ctl04_ctrl_Booking_ctl0{player_num}"
+                f"_PlayerSelectorctrl_PCombo_PlayerName_Input"
+            )
+            log.info("Filling P%d (%s) via id=%r", player_num, name, known_id)
+
+            # Prepare: remove empty-message placeholder class and ensure element is accessible
+            try:
+                page.evaluate(f"""
+                    () => {{
+                        const inp = document.getElementById('{known_id}');
+                        if (!inp) return;
+                        inp.classList.remove('rcbEmptyMessage');
+                        inp.value = '';
+                        inp.style.display = 'inline-block';
+                        inp.style.visibility = 'visible';
+                        inp.removeAttribute('readonly');
+                        // Show the Telerik wrapper too
+                        let el = inp;
+                        while (el && el !== document.body) {{
+                            if (window.getComputedStyle(el).display === 'none') el.style.display = 'block';
+                            if (window.getComputedStyle(el).visibility === 'hidden') el.style.visibility = 'visible';
+                            el = el.parentElement;
+                        }}
+                    }}
+                """)
+            except Exception as e:
+                log.warning("P%d JS prep failed: %s", player_num, e)
+
+            filled = False
+
+            # Strategy 1: Force-click + fill + wait for Telerik autocomplete
+            try:
+                inp_loc = page.locator(f"#{known_id}")
+                if inp_loc.count():
+                    inp_loc.click(force=True)
+                    page.wait_for_timeout(300)
+                    inp_loc.fill(name)
+                    log.info("P%d: typed %r", player_num, name)
+                    page.wait_for_timeout(2000)   # wait for AJAX autocomplete response
+
+                    # Click the first autocomplete suggestion
+                    clicked_sug = False
+                    for sug_sel in [
+                        "ul.rcbList li.rcbItem",
+                        ".rcbList li.rcbItem",
+                        ".rcbList li",
+                        "[class*='rcbItem']",
+                        "li.rcbItem",
+                    ]:
+                        try:
+                            sug = page.locator(sug_sel).first
+                            if sug.count():
+                                sug.wait_for(state="visible", timeout=1000)
+                                sug.click()
+                                log.info("P%d: clicked autocomplete suggestion via %r", player_num, sug_sel)
+                                clicked_sug = True
+                                filled = True
+                                break
+                        except Exception:
+                            continue
+
+                    if not clicked_sug:
+                        # No autocomplete appeared — press Tab to move focus and confirm
+                        inp_loc.press("Tab")
+                        log.info("P%d: no autocomplete suggestion, pressed Tab", player_num)
+                        filled = True
+                else:
+                    log.warning("P%d: id=%r not found; trying generic rcbInput fallback", player_num, known_id)
+                    # Fallback: use positional rcbInput index (0 = P1, idx = Pn)
+                    all_rcb = page.locator(".rcbInput")
+                    n_rcb = all_rcb.count()
+                    log.info("P%d: generic rcbInput count=%d, using index %d", player_num, n_rcb, idx)
+                    if idx < n_rcb:
+                        fb = all_rcb.nth(idx)
+                        fb.click(force=True)
+                        page.wait_for_timeout(300)
+                        fb.fill(name)
+                        page.wait_for_timeout(2000)
+                        # Try clicking autocomplete suggestion
+                        for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li", "[class*='rcbItem']"]:
+                            try:
+                                sug = page.locator(sug_sel).first
+                                if sug.count():
+                                    sug.wait_for(state="visible", timeout=1000)
+                                    sug.click()
+                                    log.info("P%d fallback: clicked suggestion", player_num)
+                                    filled = True
+                                    break
+                            except Exception:
+                                continue
+                        if not filled:
+                            fb.press("Tab")
+                            filled = True
+                            log.info("P%d fallback: pressed Tab", player_num)
+            except Exception as ex:
+                log.warning("P%d strategy 1 failed: %s", player_num, ex)
+
+            # Strategy 2: Pure JS value injection if force-click failed
+            if not filled:
                 try:
-                    inp.click()
-                    inp.fill(name)
-                    # Wait for autocomplete and dismiss it (press Escape or Tab)
-                    page.wait_for_timeout(500)
-                    inp.press("Escape")
-                    log.info("Filled P%d with: %s", idx + 1, name)
-                    filled += 1
+                    result = page.evaluate(f"""
+                        () => {{
+                            const inp = document.getElementById('{known_id}');
+                            if (!inp) return 'not found';
+                            inp.classList.remove('rcbEmptyMessage');
+                            inp.value = '{name}';
+                            ['focus','keydown','keypress','keyup','input','change','blur'].forEach(evt => {{
+                                try {{ inp.dispatchEvent(new Event(evt, {{bubbles: true}})); }} catch(e) {{}}
+                            }});
+                            return 'JS-injected: ' + inp.value;
+                        }}
+                    """)
+                    log.info("P%d JS injection: %s", player_num, result)
+                    page.wait_for_timeout(1500)
+                    filled = True
                 except Exception as ex:
-                    log.warning("Could not fill P%d (%s): %s", idx + 1, name, ex)
-        if filled == 0:
-            log.warning("No player name inputs found/filled — booking may proceed with just P1")
+                    log.warning("P%d strategy 2 JS injection failed: %s", player_num, ex)
+
+            page.wait_for_timeout(500)
 
     _screenshot(page, "06_modal_filled")
+    _dump_html(page, "06_modal_filled_html")
 
 
 # ---------------------------------------------------------------------------
