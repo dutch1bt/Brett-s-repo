@@ -140,14 +140,16 @@ def _fill_first(page: Page, selectors: list[str], value: str, label: str) -> boo
     return False
 
 
-def _click_first(page: Page, selectors: list[str], label: str) -> bool:
-    """Try each selector in order; click the first visible one. Return True on success."""
+def _click_first(page: Page, selectors: list[str], label: str, force: bool = False) -> bool:
+    """Try each selector in order; click the first one found. Return True on success."""
     for sel in selectors:
         try:
             loc = page.locator(sel).first
-            if loc.count() and loc.is_visible():
-                loc.click()
-                log.debug("Clicked %s with selector: %s", label, sel)
+            if loc.count():
+                if not force and not loc.is_visible():
+                    continue
+                loc.click(force=force)
+                log.debug("Clicked %s with selector: %s (force=%s)", label, sel, force)
                 return True
         except Exception:
             continue
@@ -560,6 +562,7 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
     # or <input type="submit" value="►">. Cover all plausible selectors then
     # fall back to a JavaScript click that inspects href/onclick/id directly.
     NEXT_SELECTORS = [
+        '#nextDates',               # confirmed element ID from CI logs
         'a:text("►")',              # ► U+25BA
         'a:text("▶")',              # ▶ U+25B6
         'input[value="►"]',
@@ -622,17 +625,21 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
                 log.debug("Could not parse date label: %r", current_label)
 
         log.debug("Clicking next-day arrow (attempt %d)", click_num + 1)
-        clicked = _click_first(ctx, NEXT_SELECTORS, "next-day arrow")
+        # Use force=True so #nextDates is clicked even if Playwright's
+        # visibility check would skip it.
+        clicked = _click_first(ctx, NEXT_SELECTORS, "next-day arrow", force=True)
         if not clicked:
-            # Last resort: JavaScript click scanning all elements
-            clicked = _js_click_next(ctx)
-            if not clicked:
-                _screenshot(ctx, f"no_arrow_{click_num}")
-                log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
-                if click_num == 0:
-                    # Extra diagnostics on first failure
-                    _dump_html(ctx, f"no_arrow_attempt_{click_num}_html")
-        ctx.wait_for_load_state("networkidle", timeout=10_000)
+            _screenshot(ctx, f"no_arrow_{click_num}")
+            log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
+            if click_num == 0:
+                _dump_html(ctx, f"no_arrow_attempt_{click_num}_html")
+            break
+        # Give AJAX a moment to fire before waiting for networkidle
+        ctx.wait_for_timeout(1500)
+        try:
+            ctx.wait_for_load_state("networkidle", timeout=8_000)
+        except Exception:
+            pass
 
     log.warning("Could not navigate to %s within %d clicks", target.date(), MAX_DAY_CLICKS)
 
