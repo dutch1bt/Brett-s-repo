@@ -409,44 +409,90 @@ def _find_booking_frame(page: Page):
     return page
 
 
+def _find_and_log_date_nav(ctx) -> None:
+    """
+    Comprehensive search: log every element on the page that could be a date
+    navigation control. Searches ALL elements (not just interactive ones) for
+    'next', 'forward', 'doPostBack', and ►/▶ patterns. Run this when the
+    normal selectors fail so the next run can use the exact IDs.
+    """
+    try:
+        results = ctx.evaluate(r"""
+            () => {
+                const skip = new Set(['SCRIPT','STYLE','HEAD','META','LINK','NOSCRIPT']);
+                return [...document.querySelectorAll('*')]
+                    .filter(el => !skip.has(el.tagName))
+                    .filter(el => {
+                        const combined = [
+                            el.id || '', el.name || '', el.className || '',
+                            el.href || '', el.getAttribute('onclick') || '',
+                            el.title || '', el.alt || '',
+                            (el.textContent || el.value || '').trim().slice(0, 40),
+                        ].join(' ');
+                        return /next|forward|doPostBack|►|▶/i.test(combined);
+                    })
+                    .map(el => ({
+                        tag: el.tagName,
+                        id: el.id || '',
+                        cls: (el.className || '').slice(0, 60),
+                        text: (el.textContent || el.value || '').trim().slice(0, 30),
+                        href: (el.href || '').slice(0, 200),
+                        onclick: (el.getAttribute('onclick') || '').slice(0, 200),
+                        vis: el.offsetParent !== null,
+                    }))
+                    .slice(0, 60);
+            }
+        """)
+        log.info("=== Date-nav / doPostBack elements (%d) ===", len(results))
+        for el in results:
+            log.info("  <%s> id=%r cls=%r text=%r href=%r onclick=%r vis=%s",
+                     el["tag"], el["id"], el["cls"][:40], el["text"],
+                     el["href"][:120], el["onclick"][:120], el["vis"])
+        log.info("=== End date-nav elements ===")
+    except Exception as e:
+        log.warning("Could not search for date-nav elements: %s", e)
+
+
 def _js_click_next(ctx) -> bool:
     """
-    JavaScript fallback: find the next-day navigation link via JS and click it.
-    Handles ASP.NET __doPostBack patterns and non-standard Unicode characters
-    that Playwright text selectors might miss.
-    Returns True if an element was found and clicked.
+    JavaScript fallback: scan ALL DOM elements (not just interactive ones) for
+    the next-day navigation control and click it.
+    Matches: ►/▶/> text, IDs/names/classNames with 'next'/'forward',
+    doPostBack hrefs/onclicks with 'next'.
     """
     try:
         clicked = ctx.evaluate(r"""
             () => {
-                const isSingleChar = t => ['►', '▶', '>'].includes(t.trim());
-                const isNextId = s => /next|forward|suivant/i.test(s);
-                const isNextPostback = s => /next|forward/i.test(s) && /doPostBack/i.test(s);
-
-                const all = [
-                    ...document.querySelectorAll(
-                        'a, button, input[type="submit"], input[type="button"], [onclick]'
-                    )
-                ];
+                const skip = new Set(['SCRIPT','STYLE','HEAD','META','LINK','NOSCRIPT']);
+                const all = [...document.querySelectorAll('*')]
+                    .filter(el => !skip.has(el.tagName));
 
                 const el = all.find(e => {
-                    const text  = (e.textContent || e.value || '').trim();
-                    const id    = e.id    || '';
-                    const name  = e.name  || '';
-                    const href  = e.href  || '';
-                    const oc    = e.getAttribute('onclick') || '';
+                    const text    = (e.textContent || e.value || '').trim();
+                    const id      = e.id    || '';
+                    const name    = e.name  || '';
+                    const cls     = e.className || '';
+                    const href    = e.href  || '';
+                    const oc      = e.getAttribute('onclick') || '';
+                    const combined = id + ' ' + name + ' ' + cls + ' ' + href + ' ' + oc;
+
                     return (
-                        isSingleChar(text)       ||
-                        isNextId(id)             ||
-                        isNextId(name)           ||
-                        isNextPostback(href)     ||
-                        isNextPostback(oc)
+                        // Arrow characters
+                        text === '►' || text === '▶' || text === '>' ||
+                        // 'next'/'forward' anywhere in id/name/class/href/onclick
+                        /lnknext|btnnext|nextday|next[_-]day|next[_-]btn|forward/i.test(combined) ||
+                        // Generic 'next' in id/name
+                        (/next|forward/i.test(id) && id.length < 100) ||
+                        // doPostBack href or onclick that references 'next'
+                        (/doPostBack/i.test(href)  && /next/i.test(href)) ||
+                        (/doPostBack/i.test(oc)    && /next/i.test(oc))
                     );
                 });
 
                 if (el) {
                     el.click();
-                    return el.id || el.name || el.textContent.trim().slice(0, 20) || '?';
+                    return el.id || el.tagName + ':' +
+                           (el.textContent || '').trim().slice(0, 20) || '?';
                 }
                 return null;
             }
