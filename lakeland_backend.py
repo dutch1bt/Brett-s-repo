@@ -1003,15 +1003,61 @@ def _reexpand_player_selector(page: Page, after_player_num: int) -> None:
         pass
 
 
+def _find_axis_frame(page: Page):
+    """
+    After LaunchReserver() opens the 'Book Tee Time' Axis dialog, the form fields
+    (player dropdowns, 'Make Tee Time' button) are loaded inside an <iframe> within
+    the dialog overlay. The main page DOM only contains the title bar.
+
+    Returns the Frame containing the booking form, or None if not found.
+    """
+    frames = page.frames
+    log.info("Frames after Reserve click (%d total):", len(frames))
+    for f in frames:
+        log.info("  Frame name=%r url=%r", f.name, f.url)
+
+    # The Axis dialog iframe usually has a booking/reservation URL
+    for frame in frames[1:]:
+        url = frame.url or ""
+        if any(kw in url.lower() for kw in [
+            "bookmgr", "bookingmgr", "axis", "teetime", "tee_time",
+            "reservation", "reserve", "book",
+        ]):
+            log.info("Found Axis frame by URL: %s", url)
+            return frame
+
+    # Fallback: look for whichever frame contains "Make Tee Time"
+    for frame in frames[1:]:
+        try:
+            if frame.locator("text='Make Tee Time'").count():
+                log.info("Found Axis frame by 'Make Tee Time' text: %s", frame.url)
+                return frame
+        except Exception:
+            continue
+
+    # Second fallback: any non-blank sub-frame that isn't the tee sheet
+    for frame in frames[1:]:
+        url = frame.url or ""
+        if url and "about:blank" not in url and "pageid=125" not in url:
+            log.info("Using first non-teesheet sub-frame as Axis: %s", url)
+            return frame
+
+    log.info("No Axis dialog iframe found — will use main page as fallback")
+    return None
+
+
 def _to_last_first(full_name: str) -> str:
     """Convert 'Brian Cogley' → 'Cogley, Brian' to match the booking form dropdown."""
     parts = full_name.strip().split()
     return f"{parts[-1]}, {' '.join(parts[:-1])}" if len(parts) >= 2 else full_name
 
 
-def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) -> None:
+def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: list[str]) -> None:
     """
     Fill the 'Book Tee Time' Axis dialog that opens after clicking Reserve.
+
+    The Axis dialog loads its form content inside an <iframe>. axis_frame is that
+    iframe's Frame object (or the main Page as a fallback if no iframe was found).
 
     From the actual UI (confirmed via screenshot):
     - Party Size: already set to Foursome by LaunchReserver() params — all 4 rows present
@@ -1019,17 +1065,23 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
     - P2–P4: Telerik RadComboBox dropdowns; names stored as "LastName, FirstName"
     - Submit: green "Make Tee Time" button (bottom right of modal)
     """
+    # ctx is the frame where the booking form lives
+    ctx = axis_frame if axis_frame is not None else page
+
     page.wait_for_timeout(4000)
     try:
         page.wait_for_load_state("networkidle", timeout=10_000)
     except Exception:
         pass
     _screenshot(page, "05_booking_modal")
-    _dump_html(page, "05_booking_modal_html")
+    _dump_html(ctx, "05_booking_modal_html")
+    log.info("Booking modal context: %s (url=%s)",
+             type(ctx).__name__, getattr(ctx, "url", "n/a"))
 
     # --- Diagnostic: log the modal's selects, inputs, buttons, and full text ---
+    # IMPORTANT: use ctx (the iframe), NOT page, so we see the form fields.
     try:
-        info = page.evaluate(r"""
+        info = ctx.evaluate(r"""
             () => {
                 const vis = el => el.offsetParent !== null;
                 const selects = [...document.querySelectorAll('select')].map(s => ({
@@ -1049,11 +1101,11 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                     text: (b.textContent||b.value||'').trim().slice(0,60),
                     onclick: (b.getAttribute('onclick')||'').slice(0,80),
                 })).slice(0, 40);
-                const pageText = (document.body.innerText||'').slice(0, 2000);
+                const pageText = (document.body.innerText||'').slice(0, 3000);
                 return {selects, inputs, btns, pageText};
             }
         """)
-        log.info("=== BOOKING MODAL ===")
+        log.info("=== BOOKING MODAL (ctx=%s) ===", type(ctx).__name__)
         log.info("Selects (%d): %s", len(info['selects']), info['selects'])
         log.info("Inputs (%d):", len(info['inputs']))
         for i in info['inputs']:
@@ -1061,14 +1113,13 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.info("Buttons (%d):", len(info['btns']))
         for b in info['btns']:
             log.info("  <%s> id=%r text=%r onclick=%r", b['tag'], b['id'], b['text'], b['onclick'])
-        log.info("Page text (2000): %r", info['pageText'])
+        log.info("Ctx text (3000): %r", info['pageText'])
         log.info("=== END BOOKING MODAL ===")
     except Exception as e:
         log.warning("Modal diagnostic failed: %s", e)
 
     # --- Player selection (P2, P3, P4) ---
-    # The modal already shows all player rows (Foursome pre-set by LaunchReserver).
-    # Names in the dropdown are "LastName, FirstName". Use Telerik API to select.
+    # All interactions use ctx (the Axis dialog iframe), not page.
     for idx, name in enumerate(player_names[1:], start=1):
         player_num = idx + 1  # 2, 3, 4
         last_first = _to_last_first(name)
@@ -1076,6 +1127,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         log.info("Selecting P%d: %r → dropdown text %r", player_num, name, last_first)
 
         # Telerik RadComboBox client ID and input element ID
+        # These IDs are for the Axis dialog frame's form, not the main page.
         combo_id = (
             f"masterPageUC_MPCA17_ctl04_ctrl_Booking_ctl0{player_num}"
             f"_PlayerSelectorctrl_PCombo_PlayerName"
@@ -1084,10 +1136,9 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
 
         filled = False
 
-        # Strategy 1: Telerik set_text(last name) → click suggestion
-        # Typing the last name filters the dropdown list; then click the matching item.
+        # Strategy 1: Telerik set_text(last name) in the iframe → click suggestion
         try:
-            tk_result = page.evaluate(f"""
+            tk_result = ctx.evaluate(f"""
                 () => {{
                     if (typeof $find === 'undefined') return 'no $find';
                     const combo = $find('{combo_id}');
@@ -1099,7 +1150,6 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
             log.info("P%d Telerik set_text(%r): %s", player_num, last_name, tk_result)
             if tk_result and "set_text OK" in tk_result:
                 page.wait_for_timeout(1200)
-                # Click the first suggestion that contains the last name
                 for item_sel in [
                     f"li.rcbItem:has-text('{last_name}')",
                     f"li.rcbItem:has-text('{last_first}')",
@@ -1107,7 +1157,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                     f"li:has-text('{last_name}')",
                 ]:
                     try:
-                        item = page.locator(item_sel).first
+                        item = ctx.locator(item_sel).first
                         if item.count():
                             item.wait_for(state="visible", timeout=2000)
                             item.click()
@@ -1119,10 +1169,10 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         except Exception as ex:
             log.warning("P%d Telerik strategy failed: %s", player_num, ex)
 
-        # Strategy 2: Click input → type last name → click matching item
+        # Strategy 2: Click input field in iframe → type last name → click item
         if not filled:
             try:
-                inp = page.locator(f"#{input_id}").first
+                inp = ctx.locator(f"#{input_id}").first
                 n = inp.count()
                 log.info("P%d: S2 input #%s count=%d", player_num, input_id, n)
                 if n:
@@ -1143,7 +1193,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                         f"li:has-text('{last_name}')",
                     ]:
                         try:
-                            item = page.locator(item_sel).first
+                            item = ctx.locator(item_sel).first
                             if item.count():
                                 item.wait_for(state="visible", timeout=2000)
                                 item.click()
@@ -1155,10 +1205,10 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
             except Exception as ex:
                 log.warning("P%d strategy 2 failed: %s", player_num, ex)
 
-        # Strategy 3: Positional fallback — use Nth rcbInput
+        # Strategy 3: Positional fallback — Nth rcbInput in the iframe
         if not filled:
             try:
-                all_rcb = page.locator(".rcbInput")
+                all_rcb = ctx.locator(".rcbInput")
                 n_rcb = all_rcb.count()
                 log.warning("P%d: S3 positional fallback, rcbInput count=%d idx=%d",
                             player_num, n_rcb, idx)
@@ -1176,7 +1226,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                         "li.rcbItem",
                     ]:
                         try:
-                            item = page.locator(item_sel).first
+                            item = ctx.locator(item_sel).first
                             if item.count():
                                 item.wait_for(state="visible", timeout=1500)
                                 item.click()
@@ -1191,10 +1241,9 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         page.wait_for_timeout(400)
 
     _screenshot(page, "06_players_filled")
-    _dump_html(page, "06_players_filled_html")
+    _dump_html(ctx, "06_players_filled_html")
 
-    # --- Submit: click "Make Tee Time" ---
-    # This is the green submit button confirmed in the actual booking modal UI.
+    # --- Submit: click "Make Tee Time" in the iframe ---
     log.info("Clicking 'Make Tee Time' to submit booking...")
     submit_selectors = [
         "a:has-text('Make Tee Time')",
@@ -1209,11 +1258,15 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         ".btnMakeTeeTime",
         "#btnMakeTeeTime",
     ]
-    submit_clicked = _click_first(page, submit_selectors, "Make Tee Time", force=True)
+    submit_clicked = _click_first(ctx, submit_selectors, "Make Tee Time", force=True)
     if not submit_clicked:
-        log.warning("'Make Tee Time' not found — logging all visible clickables for diagnosis")
+        # Also try on the main page in case the button is outside the iframe
+        submit_clicked = _click_first(page, submit_selectors, "Make Tee Time (page)", force=True)
+
+    if not submit_clicked:
+        log.warning("'Make Tee Time' not found — logging all visible clickables in ctx")
         try:
-            vis_els = page.evaluate(r"""
+            vis_els = ctx.evaluate(r"""
                 () => [...document.querySelectorAll('a,button,input')]
                     .filter(el => el.offsetParent !== null)
                     .map(el => ({
@@ -1222,7 +1275,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
                         onclick: (el.getAttribute('onclick')||'').slice(0,80),
                     })).slice(0, 60)
             """)
-            log.info("All visible clickables (%d):", len(vis_els))
+            log.info("All visible clickables in ctx (%d):", len(vis_els))
             for el in vis_els:
                 log.info("  <%s> id=%r text=%r onclick=%r",
                          el['tag'], el['id'], el['text'], el['onclick'])
@@ -1235,7 +1288,7 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
     except Exception:
         pass
     _screenshot(page, "06b_after_make_tee_time")
-    _dump_html(page, "06b_after_make_tee_time_html")
+    _dump_html(ctx, "06b_after_make_tee_time_html")
 
 
 # ---------------------------------------------------------------------------
@@ -1317,10 +1370,13 @@ def make_reservation(
                 time_cell.click(force=True)
                 log.info("Force-clicked time cell (no Reserve link visible in row)")
 
-            # Fill the booking modal (party size + player names P2–P4).
-            # _fill_booking_modal now also clicks "Update Player" (returnPlayer())
-            # which is the actual Jonas Club Software submit mechanism.
-            _fill_booking_modal(page, party_size, player_names)
+            # The Axis dialog loads its booking form in an <iframe>.
+            # Wait for it, then detect which frame contains the form.
+            page.wait_for_timeout(3000)
+            axis_frame = _find_axis_frame(page)
+
+            # Fill the booking modal in the iframe context.
+            _fill_booking_modal(page, axis_frame, party_size, player_names)
 
             # Wait for the booking to process after "Make Tee Time" was clicked
             try:
@@ -1330,10 +1386,15 @@ def make_reservation(
             _screenshot(page, "07_confirmation")
             _dump_html(page, "07_confirmation_html")
 
-            # Use innerText (visible text only) — avoids matching JS variable names
-            # like "ErrorID" inside <script> tags that appear in text_content().
+            # Check both the main page and the iframe for confirmation text.
             body = page.evaluate("document.body.innerText") or ""
-            log.info("Confirmation page innerText (800): %r", body[:800])
+            if axis_frame:
+                try:
+                    frame_body = axis_frame.evaluate("document.body.innerText") or ""
+                    body = body + "\n" + frame_body
+                except Exception:
+                    pass
+            log.info("Confirmation text (800): %r", body[:800])
 
             conf_match = re.search(
                 r"(?:confirmation|booking|reservation)[:\s#]*([A-Z0-9\-]{4,20})",
