@@ -1084,58 +1084,34 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
 
         filled = False
 
-        # Strategy 1: Telerik API — findItemByText("LastName, FirstName") to pick from list
+        # Strategy 1: Telerik set_text(last name) → click suggestion
+        # Typing the last name filters the dropdown list; then click the matching item.
         try:
             tk_result = page.evaluate(f"""
                 () => {{
                     if (typeof $find === 'undefined') return 'no $find';
                     const combo = $find('{combo_id}');
                     if (!combo) return 'combo not found: {combo_id}';
-
-                    // First try exact match on "LastName, FirstName"
-                    let item = combo.findItemByText('{last_first}');
-
-                    // If not found, scan all items for last name substring
-                    if (!item) {{
-                        const items = combo.get_items();
-                        for (let i = 0; i < items.get_count(); i++) {{
-                            const it = items.getItem(i);
-                            if ((it.get_text()||'').toLowerCase().indexOf(
-                                    '{last_name.lower()}') >= 0) {{
-                                item = it; break;
-                            }}
-                        }}
-                    }}
-
-                    if (item) {{
-                        item.select();
-                        return 'selected: ' + item.get_text();
-                    }}
-
-                    // Fallback: open dropdown so Playwright can click the list item
-                    try {{ combo.showDropDown(); }} catch(e) {{}}
-                    return 'showDropDown (no item found for {last_first})';
+                    combo.set_text('{last_name}');
+                    return 'set_text OK: ' + combo.get_text();
                 }}
             """)
-            log.info("P%d Telerik: %s", player_num, tk_result)
-            if tk_result and "selected:" in tk_result:
-                page.wait_for_timeout(600)
-                filled = True
-            elif tk_result and "showDropDown" in tk_result:
-                # Dropdown is now open — click the list item
-                page.wait_for_timeout(800)
+            log.info("P%d Telerik set_text(%r): %s", player_num, last_name, tk_result)
+            if tk_result and "set_text OK" in tk_result:
+                page.wait_for_timeout(1200)
+                # Click the first suggestion that contains the last name
                 for item_sel in [
-                    f"li.rcbItem:has-text('{last_first}')",
                     f"li.rcbItem:has-text('{last_name}')",
-                    f"li:has-text('{last_first}')",
+                    f"li.rcbItem:has-text('{last_first}')",
+                    "li.rcbItem",
                     f"li:has-text('{last_name}')",
                 ]:
                     try:
                         item = page.locator(item_sel).first
                         if item.count():
-                            item.wait_for(state="visible", timeout=1500)
+                            item.wait_for(state="visible", timeout=2000)
                             item.click()
-                            log.info("P%d: clicked dropdown item via %r", player_num, item_sel)
+                            log.info("P%d: clicked suggestion via %r", player_num, item_sel)
                             filled = True
                             break
                     except Exception:
@@ -1143,27 +1119,28 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         except Exception as ex:
             log.warning("P%d Telerik strategy failed: %s", player_num, ex)
 
-        # Strategy 2: Click the input field to open dropdown, then click item
+        # Strategy 2: Click input → type last name → click matching item
         if not filled:
             try:
                 inp = page.locator(f"#{input_id}").first
                 n = inp.count()
-                log.info("P%d: input #%s count=%d", player_num, input_id, n)
+                log.info("P%d: S2 input #%s count=%d", player_num, input_id, n)
                 if n:
                     try:
                         inp.scroll_into_view_if_needed()
                     except Exception:
                         pass
                     inp.click(force=True)
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(300)
+                    inp.fill(last_name)
+                    page.wait_for_timeout(1200)
                     _screenshot(page, f"05b_p{player_num}_dropdown")
 
                     for item_sel in [
-                        f"li.rcbItem:has-text('{last_first}')",
                         f"li.rcbItem:has-text('{last_name}')",
-                        f"li:has-text('{last_first}')",
-                        f"li:has-text('{last_name}')",
+                        f"li.rcbItem:has-text('{last_first}')",
                         "li.rcbItem",
+                        f"li:has-text('{last_name}')",
                     ]:
                         try:
                             item = page.locator(item_sel).first
