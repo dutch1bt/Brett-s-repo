@@ -91,6 +91,25 @@ def _log_clickable_elements(page: Page) -> None:
         log.warning("Could not enumerate clickable elements: %s", e)
 
 
+def _log_all_inputs(ctx) -> None:
+    """Log every <input> on the page with its type, id, name — helps diagnose fill failures."""
+    try:
+        inputs = ctx.evaluate("""
+            () => [...document.querySelectorAll('input')].map(el => ({
+                type: el.type, id: el.id, name: el.name,
+                placeholder: el.placeholder,
+                visible: el.offsetParent !== null,
+            }))
+        """)
+        log.info("All inputs (%d):", len(inputs))
+        for inp in inputs:
+            log.info("  type=%r id=%r name=%r placeholder=%r visible=%s",
+                     inp.get("type"), inp.get("id"), inp.get("name"),
+                     inp.get("placeholder"), inp.get("visible"))
+    except Exception as e:
+        log.warning("Could not enumerate inputs: %s", e)
+
+
 def _log_frames(page: Page) -> None:
     """Log all frames on the page (the tee sheet is sometimes inside an iframe)."""
     frames = page.frames
@@ -210,6 +229,51 @@ def _login(page: Page) -> None:
 # Navigate to the booking page and advance the tee-sheet calendar
 # ---------------------------------------------------------------------------
 
+def _navigate_to_booking_via_menu(page: Page) -> None:
+    """
+    After logging in at LOGIN_URL, navigate to the main club site and use the
+    Golf > Book a Tee Time nav menu to reach the booking page.
+    This avoids the ssid/session mismatch that ssidfail causes.
+    """
+    # Go to the club's main homepage (not the dynamicmodule login URL)
+    page.goto("https://www.lakelandsgolf.com/default.aspx",
+              wait_until="networkidle", timeout=30_000)
+    _screenshot(page, "menu_01_home")
+    log.info("Main site URL: %s", page.url)
+    _log_clickable_elements(page)
+
+    # Golf nav item
+    golf_clicked = _click_first(
+        page,
+        [
+            'a:has-text("Golf")',
+            'nav a:text-matches("^Golf$", "i")',
+            'li a:text-matches("^Golf$", "i")',
+            'a:text-matches("^Golf$", "i")',
+        ],
+        "Golf menu item",
+    )
+    if golf_clicked:
+        page.wait_for_timeout(600)
+        _screenshot(page, "menu_02_golf_menu")
+
+    # Book a Tee Time link
+    _click_first(
+        page,
+        [
+            'a:has-text("Book a Tee Time")',
+            'a:text-matches("book.*tee", "i")',
+            'a:text-matches("tee.*time", "i")',
+            'a[href*="pageid=125"]',
+            'a[href*="booking"]',
+        ],
+        "Book a Tee Time link",
+    )
+    page.wait_for_load_state("networkidle", timeout=30_000)
+    _screenshot(page, "menu_03_booking")
+    log.info("After menu nav: %s", page.url)
+
+
 def _open_booking_for(page: Page, date: str, players: int):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
@@ -234,36 +298,49 @@ def _open_booking_for(page: Page, date: str, players: int):
     log.info("After goto BOOKING_URL: %s", page.url)
 
     # If we were redirected to the ssidfail/login page, fill credentials there.
-    # The submit button calls doLogin('p=dynamicmodule&pageid=125&...') so after
-    # login we land directly on the booking page.
-    if any(kw in page.url for kw in ["ssidfail", "pageid=9", "login", "e=6"]):
-        log.info("Redirected to login page — logging in via the ssidfail form")
+    # The submit button calls doLogin('p=dynamicmodule&pageid=125&...') which
+    # should redirect us to the booking page on success.
+    if any(kw in page.url for kw in ["ssidfail", "pageid=9", "login", "e=6"]) \
+            or "pageid=125" not in page.url:
+        log.info("Not on booking page — logging in via ssidfail form")
         _dump_html(page, "03_ssidfail_login_page")
+        _log_all_inputs(page)
 
-        # Fill username
-        filled = _fill_first(
-            page,
-            [
-                '[id*="UserName" i]',
-                '[name*="UserName" i]',
-                'input[type="text"]',
-                '[id*="user" i]',
-            ],
-            username,
-            "username",
+        # Use JavaScript to fill the form fields AND dispatch the DOM events
+        # that doLogin() checks before reading values. Playwright's fill()
+        # alone may not fire all the events the ASP.NET form expects.
+        page.evaluate(
+            """
+            ([u, p]) => {
+                const vis = el => el.offsetParent !== null;
+                const fire = (el, val) => {
+                    el.focus();
+                    el.value = val;
+                    ['input','change','blur'].forEach(evt =>
+                        el.dispatchEvent(new Event(evt, {bubbles: true})));
+                };
+                const texts = [...document.querySelectorAll('input[type="text"]')].filter(vis);
+                const pws   = [...document.querySelectorAll('input[type="password"]')].filter(vis);
+                if (texts.length) fire(texts[0], u);
+                if (pws.length)   fire(pws[0],   p);
+            }
+            """,
+            [username, password],
         )
-        if not filled:
-            _screenshot(page, "03_no_username_field")
-            raise RuntimeError(
-                "Could not find username field on the ssidfail login page. "
-                "See debug_screenshots/03_no_username_field*.png"
-            )
+        # Belt-and-suspenders: also use Playwright's native fill so the
+        # accessibility tree reflects the values
+        try:
+            page.locator('input[type="text"]').first.fill(username)
+        except Exception:
+            pass
+        try:
+            page.locator('input[type="password"]').first.fill(password)
+        except Exception:
+            pass
 
-        # Fill password
-        page.locator('input[type="password"]').first.fill(password)
+        page.wait_for_timeout(600)  # let the form settle before clicking
+        _screenshot(page, "03a_before_login_click")
 
-        # Click the secure-login button — it calls doLogin(...pageid=125...) so
-        # after it completes we should land on the booking page.
         _click_first(
             page,
             [
@@ -272,19 +349,27 @@ def _open_booking_for(page: Page, date: str, players: int):
                 'input[value*="Sign In" i]',
                 '[onclick*="doLogin" i]',
                 'input[type="submit"]',
+                'button[type="submit"]',
             ],
             "sign-in button on ssidfail page",
         )
-        page.wait_for_load_state("networkidle", timeout=30_000)
-        _screenshot(page, "03b_after_ssidfail_login")
-        log.info("After ssidfail login: %s", page.url)
 
-        # If we're STILL on a login/ssidfail page the credentials were rejected
-        if any(kw in page.url for kw in ["ssidfail", "e=6"]):
-            raise RuntimeError(
-                "Login failed after ssidfail page — check GOLF_CLUB_USERNAME / "
-                "GOLF_CLUB_PASSWORD secrets. Current URL: " + page.url
-            )
+        # Wait for the URL to change to the booking page (up to 20s)
+        try:
+            page.wait_for_url("*pageid=125*", timeout=20_000)
+            log.info("Navigated to booking page: %s", page.url)
+        except Exception:
+            page.wait_for_load_state("networkidle", timeout=15_000)
+            log.info("After login click (no pageid=125 redirect): %s", page.url)
+
+        _screenshot(page, "03b_after_ssidfail_login")
+
+        # If still not on the booking page, fall back to LOGIN_URL + menu nav
+        if "pageid=125" not in page.url:
+            log.warning("ssidfail login did not reach booking page — "
+                        "falling back to LOGIN_URL + Golf menu navigation")
+            _login(page)
+            _navigate_to_booking_via_menu(page)
 
     log.info("Booking page URL: %s", page.url)
     _screenshot(page, "03c_booking_page")
