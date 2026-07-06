@@ -929,14 +929,43 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
       - P2–P4:      additional player name fields
       - Send Confirmations: checkbox (leave checked)
     """
-    # Wait for the modal to appear
-    page.wait_for_selector(
-        'text="Book Tee Time", [class*="modal" i], [class*="dialog" i], [class*="popup" i]',
-        timeout=10_000,
-    )
-    _screenshot(page, "05_booking_modal")
+    # Wait for the page to settle after clicking Reserve, then screenshot + dump
+    # to capture whatever booking form/modal appeared.
+    page.wait_for_timeout(2000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=8_000)
+    except Exception:
+        pass
+    _screenshot(page, "05_after_reserve_click")
+    _dump_html(page, "05_after_reserve_html")
 
-    # Party Size — select by visible text ("Single", "Twosome", etc.)
+    # Log visible selects and inputs so we can see the booking form structure
+    try:
+        form_info = page.evaluate(r"""
+            () => {
+                const vis = el => el.offsetParent !== null;
+                const selects = [...document.querySelectorAll('select')].filter(vis).map(s => ({
+                    id: s.id, name: s.name,
+                    options: [...s.options].map(o => o.text).slice(0, 10),
+                }));
+                const inputs = [...document.querySelectorAll('input,textarea')].filter(vis).map(i => ({
+                    type: i.type, id: i.id, name: i.name, value: i.value.slice(0, 30),
+                    placeholder: i.placeholder,
+                }));
+                const pageText = (document.body.innerText || '').slice(0, 800);
+                return {selects, inputs, pageText};
+            }
+        """)
+        log.info("=== BOOKING FORM STATE ===")
+        log.info("Visible selects (%d): %s", len(form_info['selects']), form_info['selects'])
+        log.info("Visible inputs (%d): %s", len(form_info['inputs']), form_info['inputs'])
+        log.info("Page text (800): %r", form_info['pageText'])
+        log.info("=== END BOOKING FORM STATE ===")
+    except Exception as e:
+        log.warning("Booking form diagnostic failed: %s", e)
+
+    # Party Size — try the visible select that contains party-size options.
+    # Jonas Club Software uses a select with options: Single, Twosome, Threesome, Foursome.
     party_sel = page.locator("select").filter(has_text=re.compile(
         r"Single|Twosome|Threesome|Foursome", re.IGNORECASE
     ))
@@ -944,16 +973,18 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         party_sel.first.select_option(label=party_size)
         log.info("Set Party Size to: %s", party_size)
     else:
-        # Fallback: any select on the modal
         selects = page.locator("select")
         for i in range(selects.count()):
-            opts = selects.nth(i).inner_text()
-            if "single" in opts.lower():
-                selects.nth(i).select_option(label=party_size)
-                log.info("Set Party Size to %s (fallback selector)", party_size)
-                break
+            try:
+                opts = selects.nth(i).inner_text()
+                if "single" in opts.lower():
+                    selects.nth(i).select_option(label=party_size)
+                    log.info("Set Party Size to %s (fallback selector)", party_size)
+                    break
+            except Exception:
+                continue
 
-    page.wait_for_timeout(500)   # let the form re-render after party size change
+    page.wait_for_timeout(500)
 
     # P1 is auto-filled with member name — skip it.
     # Fill additional players if provided (P2 onward).
@@ -961,15 +992,18 @@ def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) ->
         name_inputs = page.locator(
             'input[type="text"][id*="player" i], '
             'input[type="text"][id*="Player" i], '
-            'input[type="text"][placeholder*="player" i]'
+            'input[type="text"][placeholder*="player" i], '
+            'input[type="text"][id*="Combo" i]'
         )
-        # Skip index 0 (P1, pre-filled), fill the rest
         for idx, name in enumerate(player_names[1:], start=1):
             if idx < name_inputs.count():
                 inp = name_inputs.nth(idx)
-                if not inp.input_value():   # only fill if blank
-                    inp.fill(name)
-                    log.debug("Filled P%d with: %s", idx + 1, name)
+                try:
+                    if not inp.input_value():
+                        inp.fill(name)
+                        log.info("Filled P%d with: %s", idx + 1, name)
+                except Exception:
+                    pass
 
     _screenshot(page, "06_modal_filled")
 
@@ -1030,24 +1064,28 @@ def make_reservation(
                     ),
                 }
 
-            # Re-locate the slot cell using the selector stored during parsing,
-            # then click the "Reserve" element inside it (or the cell itself).
+            # Re-locate the slot's time cell, then navigate up to the parent <tr>
+            # and find the "Reserve" control among the sibling cells.
             loc_idx = target["_locator_index"]
             slot_sel = target.get("_slot_selector", "td[class*='NC_TimeSlotPanelSlotAvailable']")
-            el = ctx.locator(slot_sel).nth(loc_idx)
-            log.info("Clicking Reserve for %s on %s (selector=%s, idx=%d) ...",
-                     time, date, slot_sel, loc_idx)
-            # Try clicking the "Reserve" text link first, then fall back to the cell
-            reserve_el = el.locator(
+            time_cell = ctx.locator(slot_sel).nth(loc_idx)
+            log.info("Booking %s on %s (selector=%s idx=%d)", time, date, slot_sel, loc_idx)
+
+            # The "Reserve" link lives in a sibling <td>, not inside the time cell.
+            # Go up to the <tr> via XPath, then search within it.
+            parent_row = time_cell.locator("xpath=..")
+            reserve_el = parent_row.locator(
                 "a:has-text('Reserve'), button:has-text('Reserve'), "
-                "input[value='Reserve'], span:has-text('Reserve')"
+                "input[value*='Reserve' i], [onclick*='Reserve' i], "
+                "span:has-text('Reserve'), td:has-text('Reserve')"
             ).first
-            if reserve_el.count():
+            if reserve_el.count() and reserve_el.is_visible():
                 reserve_el.click()
-                log.info("Clicked Reserve link")
+                log.info("Clicked Reserve link in parent row")
             else:
-                el.click(force=True)
-                log.info("Clicked slot cell (no Reserve link found)")
+                # Fallback: force-click the time cell itself
+                time_cell.click(force=True)
+                log.info("Force-clicked time cell (no Reserve link visible in row)")
 
             # Fill the "Book Tee Time" modal (party size + player names P2–P4)
             _fill_booking_modal(page, party_size, player_names)
