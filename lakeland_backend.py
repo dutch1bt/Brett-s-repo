@@ -842,48 +842,80 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     except Exception as e:
         log.warning("Slot diagnostic failed: %s", e)
 
-    # Lakelands renders tee times as clickable table rows or links.
-    # Each bookable row contains a time string like "7:30 AM".
-    # Try table rows first, then fall back to generic clickable containers.
-    candidates = ctx.locator("table tr")
-    row_count = candidates.count()
-    log.info("Scanning %d table rows for tee times", row_count)
-    if row_count <= 1:
-        # Fall back to div/link-based listing
-        candidates = ctx.locator("a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]")
-        log.info("Fell back to link/button scan, count=%d", candidates.count())
+    # Build a list of contexts to scan: the main ctx plus any sub-frames that
+    # may have been loaded by the tee-sheet navigation (some platforms load the
+    # tee sheet into an iframe that was initially about:blank).
+    contexts_to_scan = [ctx]
+    try:
+        main_page = ctx if hasattr(ctx, 'frames') else None
+        if main_page:
+            for frame in main_page.frames[1:]:
+                url = frame.url or ""
+                if url and "about:blank" not in url:
+                    log.info("Also scanning sub-frame: %s", url[:120])
+                    contexts_to_scan.append(frame)
+    except Exception:
+        pass
 
-    for i in range(candidates.count()):
-        el = candidates.nth(i)
-        text = (el.text_content() or "").strip()
-        t = _parse_time(text)
-        if not t:
-            continue
+    for scan_ctx in contexts_to_scan:
+        if slots:
+            break   # already found results in a previous context
 
-        # Skip obvious header rows
-        if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
-            continue
+        # Lakelands renders tee times as clickable table rows or links.
+        # Each bookable row contains a time string like "7:30 AM".
+        # Try table rows first (including tr[onclick] which Jonas/Club Prophet uses),
+        # then fall back to generic clickable containers.
+        candidates = scan_ctx.locator("table tr")
+        row_count = candidates.count()
+        log.info("Scanning %d table rows for tee times (ctx=%s)",
+                 row_count, getattr(scan_ctx, 'url', type(scan_ctx).__name__)[:80])
+        if row_count <= 1:
+            # Fall back to div/link-based listing
+            candidates = scan_ctx.locator(
+                "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
+            )
+            log.info("Fell back to link/button scan, count=%d", candidates.count())
 
-        # Only include rows that are actually clickable (have a link/button or are themselves clickable)
-        is_clickable = (
-            el.locator("a, button, input[type='submit'], input[type='button']").count() > 0
-            or el.evaluate("e => e.tagName === 'A' || e.tagName === 'BUTTON'")
-        )
-        if not is_clickable:
-            continue
+        for i in range(candidates.count()):
+            el = candidates.nth(i)
+            text = (el.text_content() or "").strip()
+            t = _parse_time(text)
+            if not t:
+                continue
 
-        log.info("Found slot: time=%r text=%r", t, text[:80])
-        price_match = re.search(r"\$\s*([\d.]+)", text)
-        price = float(price_match.group(1)) if price_match else 0.0
-        cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
+            # Skip obvious header rows
+            if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
+                continue
 
-        slots.append({
-            "time": t,
-            "available_spots": 4,   # Lakelands doesn't show spot count on the list
-            "price_per_player": price,
-            "cart_included": cart,
-            "_locator_index": i,
-        })
+            # Accept rows/cells that are clickable via any mechanism:
+            # <a>, <button>, onclick attribute, or cursor:pointer style.
+            # Jonas Club Software / Club Prophet often uses <tr onclick="...">
+            # without any child <a> or <button>.
+            is_clickable = el.evaluate("""e => {
+                if (e.tagName === 'A' || e.tagName === 'BUTTON') return true;
+                if (e.getAttribute('onclick')) return true;
+                const kids = e.querySelectorAll('a,button,input[type=submit],input[type=button]');
+                if (kids.length) return true;
+                const style = window.getComputedStyle(e).cursor;
+                if (style === 'pointer') return true;
+                return false;
+            }""")
+            if not is_clickable:
+                continue
+
+            log.info("Found slot: time=%r text=%r", t, text[:80])
+            price_match = re.search(r"\$\s*([\d.]+)", text)
+            price = float(price_match.group(1)) if price_match else 0.0
+            cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
+
+            slots.append({
+                "time": t,
+                "available_spots": 4,   # Lakelands doesn't show spot count on the list
+                "price_per_player": price,
+                "cart_included": cart,
+                "_locator_index": i,
+                "_ctx_index": contexts_to_scan.index(scan_ctx),
+            })
 
     log.info("Parsed %d available slot(s)", len(slots))
     return slots
@@ -1003,11 +1035,21 @@ def make_reservation(
                 }
 
             # Re-create the same candidates locator used in _parse_slots so
-            # _locator_index maps to the correct element.
+            # _locator_index maps to the correct element. If the slot was found
+            # in a sub-frame (_ctx_index > 0), reconstruct that frame's locator.
             loc_idx = target["_locator_index"]
-            candidates = ctx.locator("table tr")
+            ctx_idx = target.get("_ctx_index", 0)
+            if ctx_idx > 0:
+                try:
+                    non_blank = [f for f in page.frames[1:] if f.url and "about:blank" not in f.url]
+                    book_ctx = non_blank[ctx_idx - 1] if ctx_idx - 1 < len(non_blank) else ctx
+                except Exception:
+                    book_ctx = ctx
+            else:
+                book_ctx = ctx
+            candidates = book_ctx.locator("table tr")
             if candidates.count() <= 1:
-                candidates = ctx.locator(
+                candidates = book_ctx.locator(
                     "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
                 )
 
@@ -1017,7 +1059,7 @@ def make_reservation(
             if book_el.count():
                 book_el.click()
             else:
-                el.click()
+                el.click(force=True)
 
             # Fill the "Book Tee Time" modal (party size + player names P2–P4)
             _fill_booking_modal(page, party_size, player_names)
