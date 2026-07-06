@@ -557,63 +557,81 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
             _screenshot(ctx, "03d_date_selected")
             return
 
-    # --- Fall back: read date label, click ► until we match ---
-    # ASP.NET renders navigation as <a href="javascript:__doPostBack(...)">►</a>
-    # or <input type="submit" value="►">. Cover all plausible selectors then
-    # fall back to a JavaScript click that inspects href/onclick/id directly.
-    NEXT_SELECTORS = [
-        '#nextDates',               # confirmed element ID from CI logs
-        'a:text("►")',              # ► U+25BA
-        'a:text("▶")',              # ▶ U+25B6
-        'input[value="►"]',
-        'input[value="▶"]',
-        'a:text(">")',
-        'input[value=">"]',
-        '[id*="lnkNext" i]',
-        '[id*="btnNext" i]',
-        '[id*="NextDay" i]',
-        '[name*="lnkNext" i]',
-        '[name*="btnNext" i]',
-        '[name*="NextDay" i]',
-        '[id*="Next" i][href]',
-        '[id*="Next" i][onclick]',
-        'a[href*="Next"]',
-        'a[onclick*="Next"]',
-        '[class*="next" i]',
-        '[title*="next" i]',
-        '[title*="forward" i]',
-        '[alt*="next" i]',
-    ]
+    # --- Diagnostics: log structure of the navigation area ---
+    try:
+        info = ctx.evaluate(r"""
+            () => {
+                const next = document.getElementById('nextDates');
+                // All anchor doPostBack links on page
+                const pbLinks = [...document.querySelectorAll('a')]
+                    .filter(a => /doPostBack/i.test(a.href || a.getAttribute('onclick') || ''))
+                    .map(a => ({
+                        id: a.id, text: (a.textContent||'').trim().slice(0,20),
+                        href: (a.href||'').slice(0,200),
+                        oc: (a.getAttribute('onclick')||'').slice(0,200),
+                    }))
+                    .slice(0, 30);
+                // Date header text candidates
+                const dateEls = [...document.querySelectorAll('*')]
+                    .filter(el => {
+                        const t = (el.textContent||'').trim();
+                        return t.length < 80 && /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(t) && /\d{4}/.test(t);
+                    })
+                    .map(el => ({tag: el.tagName, id: el.id, cls: (el.className||'').slice(0,40), text: (el.textContent||'').trim().slice(0,60)}))
+                    .slice(0, 10);
+                return {
+                    nextDatesHTML: next ? next.outerHTML.slice(0, 800) : 'NOT FOUND',
+                    nextDatesBBox: next ? JSON.stringify(next.getBoundingClientRect()) : null,
+                    pbLinks,
+                    dateEls,
+                    hasDoPostBack: typeof __doPostBack !== 'undefined',
+                };
+            }
+        """)
+        log.info("=== NAV DIAGNOSTIC ===")
+        log.info("#nextDates HTML: %s", info['nextDatesHTML'])
+        log.info("#nextDates BBox: %s", info['nextDatesBBox'])
+        log.info("__doPostBack available: %s", info['hasDoPostBack'])
+        log.info("doPostBack links (%d):", len(info['pbLinks']))
+        for lnk in info['pbLinks']:
+            log.info("  id=%r text=%r href=%r oc=%r", lnk['id'], lnk['text'], lnk['href'], lnk['oc'])
+        log.info("Date header candidates:")
+        for d in info['dateEls']:
+            log.info("  <%s> id=%r cls=%r text=%r", d['tag'], d['id'], d['cls'], d['text'])
+        log.info("=== END NAV DIAGNOSTIC ===")
+    except Exception as e:
+        log.warning("Nav diagnostic failed: %s", e)
 
+    # --- Iterate: read date, advance one day ---
     for click_num in range(MAX_DAY_CLICKS):
         # Parse the current date from the tee-sheet header
         current_label = ""
-        for loc in [
-            ctx.locator('[class*="date" i]:not(input)'),
-            ctx.locator('[class*="header" i]:not(input)'),
-            ctx.locator('h2, h3, h4, strong'),
-            ctx.locator('body'),
-        ]:
-            for i in range(min(loc.count(), 5)):
-                txt = (loc.nth(i).text_content() or "").strip()
-                if re.search(
-                    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}",
-                    txt, re.IGNORECASE,
-                ):
-                    current_label = txt
-                    break
-            if current_label:
-                break
+        try:
+            current_label = ctx.evaluate(r"""
+                () => {
+                    const els = [...document.querySelectorAll('*')].filter(el => {
+                        const t = (el.textContent||'').trim();
+                        return t.length < 80 && /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(t) && /\d{4}/.test(t);
+                    });
+                    return els.length ? (els[0].textContent||'').trim() : '';
+                }
+            """) or ""
+        except Exception:
+            pass
+        if click_num == 0:
+            log.info("Current date label on tee sheet: %r", current_label)
 
         if current_label:
             clean = re.sub(r"^[A-Za-z]+-\s*", "", current_label).strip()
             parsed = False
-            for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+            for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y",
+                        "%b. %d, %Y", "%B %d,%Y"):
                 try:
                     shown = datetime.strptime(clean, fmt)
                     parsed = True
+                    log.info("Tee sheet date: %s (target %s)", shown.date(), target.date())
                     if shown.date() == target.date():
-                        log.info("Tee sheet on target date %s", target.strftime("%Y-%m-%d"))
+                        log.info("Reached target date %s", target.strftime("%Y-%m-%d"))
                         return
                     if shown.date() > target.date():
                         log.warning("Overshot target — stopping")
@@ -622,20 +640,57 @@ def _navigate_teesheet_to(ctx, target: datetime) -> None:
                 except ValueError:
                     continue
             if not parsed:
-                log.debug("Could not parse date label: %r", current_label)
+                log.info("Could not parse date label: %r", current_label)
 
-        log.debug("Clicking next-day arrow (attempt %d)", click_num + 1)
-        # Use force=True so #nextDates is clicked even if Playwright's
-        # visibility check would skip it.
-        clicked = _click_first(ctx, NEXT_SELECTORS, "next-day arrow", force=True)
-        if not clicked:
-            _screenshot(ctx, f"no_arrow_{click_num}")
-            log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
-            if click_num == 0:
-                _dump_html(ctx, f"no_arrow_attempt_{click_num}_html")
+        log.info("Advancing date (attempt %d)", click_num + 1)
+
+        # Strategy 1: call __doPostBack directly (most reliable for ASP.NET)
+        navigated = False
+        try:
+            result = ctx.evaluate(r"""
+                () => {
+                    // Try to find an <a> with __doPostBack and 'next' in href/onclick
+                    const a = [...document.querySelectorAll('a')].find(el => {
+                        const combined = (el.href || '') + (el.getAttribute('onclick') || '');
+                        return /next/i.test(combined) && /doPostBack/i.test(combined);
+                    });
+                    if (a) { a.click(); return 'clicked-a:' + (a.href||a.getAttribute('onclick')||'').slice(0,80); }
+
+                    // Try direct __doPostBack with common arg names
+                    if (typeof __doPostBack !== 'undefined') {
+                        // Look for the control target from any doPostBack call on the page
+                        const scripts = document.documentElement.innerHTML;
+                        const m = scripts.match(/__doPostBack\('([^']*next[^']*)'[^)]*\)/i);
+                        if (m) { __doPostBack(m[1], ''); return 'doPostBack:' + m[1]; }
+                        // Fallback: try common control names
+                        __doPostBack('nextDates', '');
+                        return 'doPostBack:nextDates';
+                    }
+                    return null;
+                }
+            """)
+            if result:
+                log.info("Navigation result: %s", result)
+                navigated = True
+        except Exception as e:
+            log.warning("Navigation JS failed: %s", e)
+
+        # Strategy 2: Playwright click on #nextDates children
+        if not navigated:
+            try:
+                child = ctx.locator('#nextDates a, #nextDates button, #nextDates input').first
+                if child.count():
+                    child.click(force=True)
+                    log.info("Clicked child of #nextDates")
+                    navigated = True
+            except Exception:
+                pass
+
+        if not navigated:
+            log.warning("No navigation method worked on attempt %d", click_num + 1)
             break
-        # Give AJAX a moment to fire before waiting for networkidle
-        ctx.wait_for_timeout(1500)
+
+        ctx.wait_for_timeout(2000)
         try:
             ctx.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:
