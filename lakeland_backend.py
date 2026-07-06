@@ -1003,421 +1003,262 @@ def _reexpand_player_selector(page: Page, after_player_num: int) -> None:
         pass
 
 
+def _to_last_first(full_name: str) -> str:
+    """Convert 'Brian Cogley' → 'Cogley, Brian' to match the booking form dropdown."""
+    parts = full_name.strip().split()
+    return f"{parts[-1]}, {' '.join(parts[:-1])}" if len(parts) >= 2 else full_name
+
+
 def _fill_booking_modal(page: Page, party_size: str, player_names: list[str]) -> None:
     """
-    Fill in the 'Book Tee Time' modal that appears after clicking a time slot.
+    Fill the 'Book Tee Time' Axis dialog that opens after clicking Reserve.
 
-    Modal fields (from the actual Lakelands UI):
-      - Round:      "Eighteen Holes" (leave as default)
-      - Party Size: Single / Twosome / Threesome / Foursome
-      - Date/Time:  pre-filled from the slot selection
-      - P1:         auto-filled with member name ("Dutcher, Brett")
-      - P2–P4:      additional player name fields
-      - Send Confirmations: checkbox (leave checked)
+    From the actual UI (confirmed via screenshot):
+    - Party Size: already set to Foursome by LaunchReserver() params — all 4 rows present
+    - P1: auto-filled as "Dutcher, Brett"
+    - P2–P4: Telerik RadComboBox dropdowns; names stored as "LastName, FirstName"
+    - Submit: green "Make Tee Time" button (bottom right of modal)
     """
-    # Wait longer for the booking panel and AJAX to fully initialize.
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(4000)
     try:
         page.wait_for_load_state("networkidle", timeout=10_000)
     except Exception:
         pass
-    _screenshot(page, "05_after_reserve_click")
-    _dump_html(page, "05_after_reserve_html")
+    _screenshot(page, "05_booking_modal")
+    _dump_html(page, "05_booking_modal_html")
 
-    # --- Comprehensive diagnostic: find ALL interactive elements + PlayerSelectorDiv state ---
+    # --- Diagnostic: log the modal's selects, inputs, buttons, and full text ---
     try:
-        form_info = page.evaluate(r"""
+        info = page.evaluate(r"""
             () => {
-                const vis = el => {
-                    if (!el.offsetParent) return false;
-                    const r = el.getBoundingClientRect();
-                    return r.width > 0 && r.height > 0;
-                };
-                const allSelects = [...document.querySelectorAll('select')].map(s => ({
-                    id: s.id, name: s.name, vis: vis(s),
-                    options: [...s.options].map(o => o.text).slice(0, 8),
+                const vis = el => el.offsetParent !== null;
+                const selects = [...document.querySelectorAll('select')].map(s => ({
+                    id: s.id, vis: vis(s),
+                    opts: [...s.options].map(o => o.text).slice(0, 8),
                 }));
                 const inputs = [...document.querySelectorAll(
-                    'input[type=text], input[type=search], .rcbInput, [class*=rcbInput]'
+                    'input[type=text], input[type=search], .rcbInput'
                 )].map(i => ({
-                    type: i.type, id: i.id, name: i.name,
-                    cls: (i.className||'').slice(0,60),
-                    value: (i.value||'').slice(0,30), vis: vis(i),
+                    id: i.id, cls: (i.className||'').slice(0,60),
+                    val: (i.value||'').slice(0,40), vis: vis(i),
                 }));
                 const btns = [...document.querySelectorAll(
-                    'input[type=submit],input[type=button],button,[onclick]'
+                    'a, button, input[type=submit], input[type=button], [onclick]'
                 )].filter(vis).map(b => ({
-                    tag: b.tagName, id: b.id,
-                    text: (b.textContent||b.value||'').trim().slice(0,40),
+                    tag: b.tagName, id: b.id||'',
+                    text: (b.textContent||b.value||'').trim().slice(0,60),
                     onclick: (b.getAttribute('onclick')||'').slice(0,80),
-                })).slice(0,20);
-                // Check PlayerSelectorDiv visibility
-                const psd = document.getElementById('PlayerSelectorDiv');
-                const psdInfo = psd ? {
-                    display: window.getComputedStyle(psd).display,
-                    visibility: window.getComputedStyle(psd).visibility,
-                    offsetParent: psd.offsetParent ? 'yes' : 'no',
-                } : 'NOT IN DOM';
-                // Log unPinDiv trigger elements
-                const pinLinks = [...document.querySelectorAll('[onclick*="PlayerSelectorDiv"],[onclick*="unPinDiv"]')]
-                    .map(el => ({
-                        tag: el.tagName, id: el.id,
-                        text: (el.textContent||'').trim().slice(0,30),
-                        onclick: (el.getAttribute('onclick')||'').slice(0,80),
-                        vis: vis(el),
-                    }));
-                const pageText = (document.body.innerText||'').slice(0,1500);
-                return {allSelects, inputs, btns, psdInfo, pinLinks, pageText};
+                })).slice(0, 40);
+                const pageText = (document.body.innerText||'').slice(0, 2000);
+                return {selects, inputs, btns, pageText};
             }
         """)
-        log.info("=== BOOKING FORM STATE ===")
-        log.info("PlayerSelectorDiv: %s", form_info.get('psdInfo'))
-        log.info("unPinDiv trigger elements (%d): %s", len(form_info.get('pinLinks', [])), form_info.get('pinLinks'))
-        log.info("All selects (%d):", len(form_info['allSelects']))
-        for s in form_info['allSelects']:
-            log.info("  select id=%r vis=%s opts=%s", s['id'], s['vis'], s['options'])
-        log.info("All inputs (incl rcbInput) (%d):", len(form_info['inputs']))
-        for inp in form_info['inputs']:
-            log.info("  input id=%r cls=%r val=%r vis=%s", inp['id'], inp['cls'], inp['value'], inp['vis'])
-        log.info("Visible buttons (%d):", len(form_info['btns']))
-        for b in form_info['btns']:
-            log.info("  btn <%s> id=%r text=%r onclick=%r", b['tag'], b['id'], b['text'], b['onclick'])
-        log.info("Page text (1500): %r", form_info['pageText'])
-        log.info("=== END BOOKING FORM STATE ===")
+        log.info("=== BOOKING MODAL ===")
+        log.info("Selects (%d): %s", len(info['selects']), info['selects'])
+        log.info("Inputs (%d):", len(info['inputs']))
+        for i in info['inputs']:
+            log.info("  id=%r cls=%r val=%r vis=%s", i['id'], i['cls'][:40], i['val'], i['vis'])
+        log.info("Buttons (%d):", len(info['btns']))
+        for b in info['btns']:
+            log.info("  <%s> id=%r text=%r onclick=%r", b['tag'], b['id'], b['text'], b['onclick'])
+        log.info("Page text (2000): %r", info['pageText'])
+        log.info("=== END BOOKING MODAL ===")
     except Exception as e:
-        log.warning("Booking form diagnostic failed: %s", e)
+        log.warning("Modal diagnostic failed: %s", e)
 
-    # --- Party Size ---
-    # Set party size on the (hidden) drpGroupSize select, then trigger a proper
-    # ASP.NET postback so the server adds P3/P4 player input rows to the DOM.
-    # Without the postback, only the P2 row exists (Twosome default).
-    try:
-        result = page.evaluate("""
-            ([party]) => {
-                const partyNorm = party.toLowerCase();
-                for (const sel of document.querySelectorAll('select')) {
-                    const opts = [...sel.options];
-                    const match = opts.find(o => o.text.toLowerCase() === partyNorm);
-                    if (match) {
-                        sel.value = match.value;
-                        // jQuery trigger is more compatible with ASP.NET UpdatePanel
-                        if (typeof $ !== 'undefined') {
-                            $(sel).val(match.value).trigger('change');
-                        } else {
-                            ['change','input'].forEach(evt =>
-                                sel.dispatchEvent(new Event(evt, {bubbles: true})));
-                        }
-                        return 'set ' + (sel.id||'select') + ' value=' + match.value;
-                    }
-                }
-                return 'party size select not found';
-            }
-        """, [party_size])
-        log.info("Party size JS: %s", result)
-    except Exception as e:
-        log.warning("JS party size set failed: %s", e)
+    # --- Player selection (P2, P3, P4) ---
+    # The modal already shows all player rows (Foursome pre-set by LaunchReserver).
+    # Names in the dropdown are "LastName, FirstName". Use Telerik API to select.
+    for idx, name in enumerate(player_names[1:], start=1):
+        player_num = idx + 1  # 2, 3, 4
+        last_first = _to_last_first(name)
+        last_name = name.strip().split()[-1]
+        log.info("Selecting P%d: %r → dropdown text %r", player_num, name, last_first)
 
-    # Trigger the party size change via Playwright's native select_option so that
-    # the browser fires the element's own onchange handler (which calls __doPostBack
-    # internally). Calling __doPostBack directly from page.evaluate() fails because
-    # the ASP.NET AJAX library is declared in strict mode.
-    page.wait_for_timeout(500)
-    try:
-        party_sel = page.locator("#masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize")
-        party_sel.select_option(label=party_size, force=True)
-        log.info("Native select_option %r on drpGroupSize", party_size)
+        # Telerik RadComboBox client ID and input element ID
+        combo_id = (
+            f"masterPageUC_MPCA17_ctl04_ctrl_Booking_ctl0{player_num}"
+            f"_PlayerSelectorctrl_PCombo_PlayerName"
+        )
+        input_id = combo_id + "_Input"
+
+        filled = False
+
+        # Strategy 1: Telerik API — findItemByText("LastName, FirstName") to pick from list
         try:
-            page.wait_for_load_state("networkidle", timeout=8_000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        log.warning("Native select_option failed: %s", e)
+            tk_result = page.evaluate(f"""
+                () => {{
+                    if (typeof $find === 'undefined') return 'no $find';
+                    const combo = $find('{combo_id}');
+                    if (!combo) return 'combo not found: {combo_id}';
 
-    # Wait for P3/P4 player inputs to appear (up to 8 s, poll every 500 ms)
-    for _ in range(16):
-        n_rcb = page.locator(".rcbInput").count()
-        if n_rcb >= 3:
-            log.info("Party size AJAX done: %d rcbInput rows present", n_rcb)
-            break
-        page.wait_for_timeout(500)
-    else:
-        log.warning("Only %d rcbInput rows after 8 s — P3/P4 may be missing",
-                    page.locator(".rcbInput").count())
+                    // First try exact match on "LastName, FirstName"
+                    let item = combo.findItemByText('{last_first}');
 
-    # --- Reveal PlayerSelectorDiv ---
-    # After clicking Reserve the player section is hidden. We:
-    #   1. Try clicking the "Select Player" trigger element (may now be visible)
-    #   2. Call unPinDiv('PlayerSelectorDiv', ...) directly via JS
-    #   3. Force-show the div and all hidden ancestors
-    try:
-        # Step 1: click the visible "Select Player" TD/link if it appeared
-        for sel in [
-            "td:has-text('Select Player')",
-            "a:has-text('Select Player')",
-            "span:has-text('Select Player')",
-            "[onclick*='PlayerSelectorDiv']",
-            "[onclick*='unPinDiv']",
-        ]:
-            try:
-                loc = page.locator(sel).first
-                if loc.count() and loc.is_visible():
-                    loc.click()
-                    log.info("Clicked Select Player trigger: %r", sel)
-                    page.wait_for_timeout(1000)
-                    break
-            except Exception:
-                continue
-    except Exception as e:
-        log.warning("Select Player trigger click failed: %s", e)
-
-    try:
-        result = page.evaluate("""
-            () => {
-                const msgs = [];
-
-                // 1. Call the site's unPinDiv toggle if available
-                if (typeof unPinDiv !== 'undefined') {
-                    try {
-                        unPinDiv('PlayerSelectorDiv', 'PlayerSelectorPinLink');
-                        msgs.push('unPinDiv called');
-                    } catch(e) { msgs.push('unPinDiv threw: ' + e); }
-                } else {
-                    msgs.push('unPinDiv not defined');
-                }
-
-                // 2. Force-show PlayerSelectorDiv and its hidden ancestor chain
-                const div = document.getElementById('PlayerSelectorDiv');
-                if (div) {
-                    div.style.display = 'block';
-                    div.style.visibility = 'visible';
-                    div.style.opacity = '1';
-                    let el = div.parentElement;
-                    let forced = 0;
-                    while (el && el !== document.body) {
-                        const cs = window.getComputedStyle(el);
-                        if (cs.display === 'none') { el.style.display = 'block'; forced++; }
-                        if (cs.visibility === 'hidden') { el.style.visibility = 'visible'; forced++; }
-                        el = el.parentElement;
-                    }
-                    msgs.push('PlayerSelectorDiv shown; ancestors forced: ' + forced);
-                } else {
-                    msgs.push('PlayerSelectorDiv not in DOM');
-                    // Fallback: walk up from each rcbInput and show hidden parents
-                    let shown = 0;
-                    [...document.querySelectorAll('.rcbInput')].forEach(inp => {
-                        let el = inp;
-                        while (el && el !== document.body) {
-                            if (window.getComputedStyle(el).display === 'none') {
-                                el.style.display = 'block';
-                                shown++;
-                            }
-                            el = el.parentElement;
-                        }
-                    });
-                    msgs.push('forced rcbInput ancestor chain: ' + shown + ' hidden elements shown');
-                }
-
-                // 3. Also show any Telerik combo wrapper that wraps .rcbInput
-                [...document.querySelectorAll('.RadComboBox,.rcbInput')].forEach(el => {
-                    let p = el;
-                    while (p && p !== document.body) {
-                        if (window.getComputedStyle(p).display === 'none') p.style.display = 'block';
-                        if (window.getComputedStyle(p).visibility === 'hidden') p.style.visibility = 'visible';
-                        p = p.parentElement;
-                    }
-                });
-
-                return msgs.join(' | ');
-            }
-        """)
-        log.info("Reveal PlayerSelectorDiv: %s", result)
-        page.wait_for_timeout(1500)
-        _screenshot(page, "05b_after_player_div_reveal")
-    except Exception as e:
-        log.warning("Could not reveal PlayerSelectorDiv: %s", e)
-
-    # --- Player names ---
-    # P1 is auto-filled with the member's name; fill P2 onward.
-    # Telerik RadComboBox: ID pattern ctl0{N}_PlayerSelectorctrl_PCombo_PlayerName_Input
-    if len(player_names) > 1:
-        for idx, name in enumerate(player_names[1:], start=1):
-            player_num = idx + 1   # 2, 3, 4
-            known_id = (
-                f"masterPageUC_MPCA17_ctl04_ctrl_Booking_ctl0{player_num}"
-                f"_PlayerSelectorctrl_PCombo_PlayerName_Input"
-            )
-            log.info("Filling P%d (%s) via id=%r", player_num, name, known_id)
-
-            # Prepare: remove empty-message class and show element + ancestors
-            try:
-                page.evaluate(f"""
-                    () => {{
-                        const inp = document.getElementById('{known_id}');
-                        if (!inp) return;
-                        inp.classList.remove('rcbEmptyMessage');
-                        inp.value = '';
-                        inp.removeAttribute('readonly');
-                        let el = inp;
-                        while (el && el !== document.body) {{
-                            if (window.getComputedStyle(el).display === 'none') el.style.display = 'block';
-                            if (window.getComputedStyle(el).visibility === 'hidden') el.style.visibility = 'visible';
-                            el = el.parentElement;
+                    // If not found, scan all items for last name substring
+                    if (!item) {{
+                        const items = combo.get_items();
+                        for (let i = 0; i < items.get_count(); i++) {{
+                            const it = items.getItem(i);
+                            if ((it.get_text()||'').toLowerCase().indexOf(
+                                    '{last_name.lower()}') >= 0) {{
+                                item = it; break;
+                            }}
                         }}
                     }}
-                """)
-            except Exception as e:
-                log.warning("P%d JS prep failed: %s", player_num, e)
 
-            filled = False
-
-            # Strategy 1: Telerik JavaScript API — most reliable for RadComboBox
-            combo_client_id = known_id.replace("_Input", "")
-            try:
-                tk_result = page.evaluate(f"""
-                    () => {{
-                        if (typeof $find === 'undefined') return 'no $find';
-                        const combo = $find('{combo_client_id}');
-                        if (!combo) return 'combo not found: {combo_client_id}';
-                        combo.set_text('{name}');
-                        combo.set_value('');   // clear hidden value so server accepts text
-                        return 'Telerik set_text OK: ' + combo.get_text();
+                    if (item) {{
+                        item.select();
+                        return 'selected: ' + item.get_text();
                     }}
-                """)
-                log.info("P%d Telerik API: %s", player_num, tk_result)
-                if "OK" in (tk_result or ""):
-                    page.wait_for_timeout(2000)
-                    # Click the first autocomplete suggestion if one appeared
-                    for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li.rcbItem", "li.rcbItem"]:
+
+                    // Fallback: open dropdown so Playwright can click the list item
+                    try {{ combo.showDropDown(); }} catch(e) {{}}
+                    return 'showDropDown (no item found for {last_first})';
+                }}
+            """)
+            log.info("P%d Telerik: %s", player_num, tk_result)
+            if tk_result and "selected:" in tk_result:
+                page.wait_for_timeout(600)
+                filled = True
+            elif tk_result and "showDropDown" in tk_result:
+                # Dropdown is now open — click the list item
+                page.wait_for_timeout(800)
+                for item_sel in [
+                    f"li.rcbItem:has-text('{last_first}')",
+                    f"li.rcbItem:has-text('{last_name}')",
+                    f"li:has-text('{last_first}')",
+                    f"li:has-text('{last_name}')",
+                ]:
+                    try:
+                        item = page.locator(item_sel).first
+                        if item.count():
+                            item.wait_for(state="visible", timeout=1500)
+                            item.click()
+                            log.info("P%d: clicked dropdown item via %r", player_num, item_sel)
+                            filled = True
+                            break
+                    except Exception:
+                        continue
+        except Exception as ex:
+            log.warning("P%d Telerik strategy failed: %s", player_num, ex)
+
+        # Strategy 2: Click the input field to open dropdown, then click item
+        if not filled:
+            try:
+                inp = page.locator(f"#{input_id}").first
+                n = inp.count()
+                log.info("P%d: input #%s count=%d", player_num, input_id, n)
+                if n:
+                    try:
+                        inp.scroll_into_view_if_needed()
+                    except Exception:
+                        pass
+                    inp.click(force=True)
+                    page.wait_for_timeout(1000)
+                    _screenshot(page, f"05b_p{player_num}_dropdown")
+
+                    for item_sel in [
+                        f"li.rcbItem:has-text('{last_first}')",
+                        f"li.rcbItem:has-text('{last_name}')",
+                        f"li:has-text('{last_first}')",
+                        f"li:has-text('{last_name}')",
+                        "li.rcbItem",
+                    ]:
                         try:
-                            sug = page.locator(sug_sel).first
-                            if sug.count():
-                                sug.wait_for(state="visible", timeout=1000)
-                                sug.click()
-                                log.info("P%d: Telerik autocomplete suggestion clicked", player_num)
+                            item = page.locator(item_sel).first
+                            if item.count():
+                                item.wait_for(state="visible", timeout=2000)
+                                item.click()
+                                log.info("P%d: S2 clicked item via %r", player_num, item_sel)
+                                filled = True
                                 break
                         except Exception:
                             continue
-                    filled = True
             except Exception as ex:
-                log.warning("P%d Telerik API failed: %s", player_num, ex)
+                log.warning("P%d strategy 2 failed: %s", player_num, ex)
 
-            # Strategy 2: Scroll into view → force-click → fill → autocomplete
-            if not filled:
-                inp_loc = page.locator(f"#{known_id}")
-                n_inp = inp_loc.count()
-                log.info("P%d: known-id locator count=%d", player_num, n_inp)
-                if n_inp:
+        # Strategy 3: Positional fallback — use Nth rcbInput
+        if not filled:
+            try:
+                all_rcb = page.locator(".rcbInput")
+                n_rcb = all_rcb.count()
+                log.warning("P%d: S3 positional fallback, rcbInput count=%d idx=%d",
+                            player_num, n_rcb, idx)
+                if idx < n_rcb:
+                    fb = all_rcb.nth(idx)
                     try:
-                        inp_loc.scroll_into_view_if_needed()
-                        page.wait_for_timeout(200)
-                        inp_loc.click(force=True)
-                        page.wait_for_timeout(300)
-                        inp_loc.fill(name)
-                        log.info("P%d: filled via scroll+force-click: %r", player_num, name)
-                        page.wait_for_timeout(2000)
-
-                        clicked_sug = False
-                        for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li.rcbItem",
-                                        ".rcbList li", "[class*='rcbItem']"]:
-                            try:
-                                sug = page.locator(sug_sel).first
-                                if sug.count():
-                                    sug.wait_for(state="visible", timeout=1000)
-                                    sug.click()
-                                    log.info("P%d: clicked autocomplete via %r", player_num, sug_sel)
-                                    clicked_sug = True
-                                    break
-                            except Exception:
-                                continue
-                        if not clicked_sug:
-                            inp_loc.press("Tab")
-                            log.info("P%d: Tab pressed (no autocomplete)", player_num)
-                        filled = True
-                    except Exception as ex:
-                        log.warning("P%d strategy 2 failed: %s", player_num, ex)
-                else:
-                    # Positional fallback if known ID missing
-                    all_rcb = page.locator(".rcbInput")
-                    n_rcb = all_rcb.count()
-                    log.warning("P%d: known id not found; rcbInput count=%d, need index %d",
-                                player_num, n_rcb, idx)
-                    if idx < n_rcb:
+                        fb.scroll_into_view_if_needed()
+                    except Exception:
+                        pass
+                    fb.click(force=True)
+                    page.wait_for_timeout(800)
+                    for item_sel in [
+                        f"li.rcbItem:has-text('{last_first}')",
+                        f"li.rcbItem:has-text('{last_name}')",
+                        "li.rcbItem",
+                    ]:
                         try:
-                            fb = all_rcb.nth(idx)
-                            fb.scroll_into_view_if_needed()
-                            page.wait_for_timeout(200)
-                            fb.click(force=True)
-                            page.wait_for_timeout(300)
-                            fb.fill(name)
-                            page.wait_for_timeout(2000)
-                            for sug_sel in ["ul.rcbList li.rcbItem", ".rcbList li"]:
-                                try:
-                                    sug = page.locator(sug_sel).first
-                                    if sug.count():
-                                        sug.wait_for(state="visible", timeout=1000)
-                                        sug.click()
-                                        filled = True
-                                        break
-                                except Exception:
-                                    continue
-                            if not filled:
-                                fb.press("Tab")
+                            item = page.locator(item_sel).first
+                            if item.count():
+                                item.wait_for(state="visible", timeout=1500)
+                                item.click()
+                                log.info("P%d: S3 clicked item via %r", player_num, item_sel)
                                 filled = True
-                        except Exception as ex:
-                            log.warning("P%d positional fallback failed: %s", player_num, ex)
+                                break
+                        except Exception:
+                            continue
+            except Exception as ex:
+                log.warning("P%d strategy 3 positional failed: %s", player_num, ex)
 
-            # Strategy 3: Pure JS value + event injection (last resort)
-            if not filled:
-                try:
-                    js_result = page.evaluate(f"""
-                        () => {{
-                            const inp = document.getElementById('{known_id}');
-                            if (!inp) return 'not found';
-                            inp.classList.remove('rcbEmptyMessage');
-                            inp.value = '{name}';
-                            ['focus','keydown','keypress','keyup','input','change','blur'].forEach(evt => {{
-                                try {{ inp.dispatchEvent(new Event(evt, {{bubbles: true}})); }} catch(e) {{}}
-                            }});
-                            return 'JS-injected: ' + inp.value;
-                        }}
-                    """)
-                    log.info("P%d JS injection: %s", player_num, js_result)
-                    page.wait_for_timeout(1500)
-                    filled = True
-                except Exception as ex:
-                    log.warning("P%d strategy 3 JS injection failed: %s", player_num, ex)
+        page.wait_for_timeout(400)
 
-            # After filling this player, click "Update Player" (returnPlayer()) to confirm.
-            # Jonas Club Software adds one player at a time: fill name → click Update Player
-            # → the page refreshes and PlayerSelectorDiv is ready for the next player.
-            page.wait_for_timeout(1000)
-            _click_update_player(page, player_num)
+    _screenshot(page, "06_players_filled")
+    _dump_html(page, "06_players_filled_html")
 
-            # Re-expand PlayerSelectorDiv for the next player (it may have collapsed)
-            if idx < len(player_names) - 1:
-                page.wait_for_timeout(1500)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=6_000)
-                except Exception:
-                    pass
-                _reexpand_player_selector(page, player_num)
-
-    _screenshot(page, "06_modal_filled")
-    _dump_html(page, "06_modal_filled_html")
-
-    # Final "Update Player" attempt — covers the case where the loop above
-    # didn't click it for the last player, or the form submits all players at once.
-    log.info("Final Update Player / returnPlayer() attempt after all players filled")
-    _click_update_player(page, 99)
+    # --- Submit: click "Make Tee Time" ---
+    # This is the green submit button confirmed in the actual booking modal UI.
+    log.info("Clicking 'Make Tee Time' to submit booking...")
+    submit_selectors = [
+        "a:has-text('Make Tee Time')",
+        "button:has-text('Make Tee Time')",
+        "input[value*='Make Tee Time' i]",
+        "[onclick*='makeTeeTime' i]",
+        "[onclick*='MakeTeeTime' i]",
+        "[onclick*='makeTeetime' i]",
+        "[id*='MakeTeeTime' i]",
+        "[id*='maketeetime' i]",
+        "a:has-text('Make Tee')",
+        ".btnMakeTeeTime",
+        "#btnMakeTeeTime",
+    ]
+    submit_clicked = _click_first(page, submit_selectors, "Make Tee Time", force=True)
+    if not submit_clicked:
+        log.warning("'Make Tee Time' not found — logging all visible clickables for diagnosis")
+        try:
+            vis_els = page.evaluate(r"""
+                () => [...document.querySelectorAll('a,button,input')]
+                    .filter(el => el.offsetParent !== null)
+                    .map(el => ({
+                        tag: el.tagName, id: el.id||'',
+                        text: (el.textContent||el.value||'').trim().slice(0,60),
+                        onclick: (el.getAttribute('onclick')||'').slice(0,80),
+                    })).slice(0, 60)
+            """)
+            log.info("All visible clickables (%d):", len(vis_els))
+            for el in vis_els:
+                log.info("  <%s> id=%r text=%r onclick=%r",
+                         el['tag'], el['id'], el['text'], el['onclick'])
+        except Exception:
+            pass
 
     page.wait_for_timeout(3000)
     try:
-        page.wait_for_load_state("networkidle", timeout=10_000)
+        page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
         pass
-    _screenshot(page, "06b_after_update_player")
-    _dump_html(page, "06b_after_update_player_html")
+    _screenshot(page, "06b_after_make_tee_time")
+    _dump_html(page, "06b_after_make_tee_time_html")
 
 
 # ---------------------------------------------------------------------------
@@ -1504,7 +1345,7 @@ def make_reservation(
             # which is the actual Jonas Club Software submit mechanism.
             _fill_booking_modal(page, party_size, player_names)
 
-            # Wait for the booking to process after returnPlayer() was called
+            # Wait for the booking to process after "Make Tee Time" was clicked
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
             except Exception:
@@ -1541,17 +1382,16 @@ def make_reservation(
                     "message": f"Booking failed — visible error on page. See debug_screenshots.",
                 }
 
-            # Detect if the booking dialog is still open (Update Player didn't submit).
-            # Key signal: page still shows "Select Player" AND "Update Player" together,
-            # meaning we're still on the player-selection screen with no confirmation.
-            if "Select Player" in body and "Update Player" in body and "confirmation" not in body.lower():
-                _screenshot(page, "error_still_on_player_selection")
+            # Detect if the booking dialog is still open ("Make Tee Time" wasn't clicked
+            # or didn't submit). Both buttons still present = still in the modal.
+            if "Make Tee Time" in body and "Discard Changes" in body:
+                _screenshot(page, "error_still_in_modal")
                 return {
                     "success": False,
                     "message": (
-                        "returnPlayer() / Update Player was called but page still shows "
-                        "player selection — booking not confirmed. "
-                        "Check debug_screenshots/06b_after_update_player* for page state."
+                        "Booking modal still open after submit attempt — "
+                        "'Make Tee Time' button may not have been found or clicked. "
+                        "Check debug_screenshots/06b_after_make_tee_time* for page state."
                     ),
                 }
 
