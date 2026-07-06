@@ -161,46 +161,42 @@ def _login(page: Page) -> None:
 
 def _open_booking_for(page: Page, date: str, players: int) -> None:
     """
-    Navigate via Golf → Book a Tee Time in the side nav, then drive the
-    tee-sheet calendar to the target date.
+    Land on the Lakelands tee-sheet and navigate to the target date.
 
-    The Lakelands site nav (post-login):
-        Golf  ▶  →  Book a Tee Time
+    Primary path: go directly to BOOKING_URL (valid session cookie from login
+    gets us in without re-authenticating).  Fall back to menu nav if the
+    direct URL redirects back to the login page.
 
     The booking page (TEE SHEET tab) shows:
         ◄  Fri-July 17, 2026  ►
               [Calendar]
     """
-    log.info("Navigating Golf → Book a Tee Time for %s ...", date)
+    log.info("Opening booking page for %s ...", date)
 
-    # Step 1: expand the Golf submenu
-    _click_first(
-        page,
-        [
-            'nav a:text-is("Golf")',
-            'li a:text-is("Golf")',
-            'a:text-is("Golf")',
-            '*:text-is("Golf")',
-        ],
-        "Golf nav item",
-    )
-    page.wait_for_timeout(500)
-    _screenshot(page, "03a_golf_menu")
+    # --- Primary: navigate directly to the booking URL ---
+    page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+    _screenshot(page, "03_booking_page")
 
-    # Step 2: click "Book a Tee Time"
-    _click_first(
-        page,
-        [
-            'a:text-is("Book a Tee Time")',
-            'a:text-matches("book.*tee|tee.*time", "i")',
-            '*:text-is("Book a Tee Time")',
-        ],
-        "Book a Tee Time link",
-    )
-    page.wait_for_load_state("networkidle", timeout=30_000)
-    _screenshot(page, "03b_booking_page")
+    # Detect redirect back to login (session not accepted)
+    if "pageid=9" in page.url or "login" in page.url.lower():
+        log.warning("Direct URL redirected to login — trying menu navigation")
+        # Re-login and try menu nav
+        _login(page)
+        _click_first(
+            page,
+            ['a:text-is("Golf")', 'li a:text-is("Golf")', '*:text-is("Golf")'],
+            "Golf nav item",
+        )
+        page.wait_for_timeout(600)
+        _click_first(
+            page,
+            ['a:text-is("Book a Tee Time")', 'a:text-matches("book.*tee", "i")'],
+            "Book a Tee Time link",
+        )
+        page.wait_for_load_state("networkidle", timeout=30_000)
+        _screenshot(page, "03b_booking_page_menu")
 
-    # Step 3: advance the tee-sheet calendar to the target date
+    # --- Advance the tee-sheet calendar to the target date ---
     target = datetime.strptime(date, "%Y-%m-%d")
     _navigate_teesheet_to(page, target)
     _screenshot(page, "04_results")
@@ -245,15 +241,35 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
             return
 
     # --- Fall back: read date label, click ► until we match ---
-    for _ in range(MAX_DAY_CLICKS):
-        # Parse date from the tee-sheet header, e.g. "Fri-July 17, 2026"
+    # The ► on Lakelands is a Unicode right-pointing triangle (►, U+25BA).
+    # ASP.NET renders navigation as <a href="javascript:__doPostBack(...)">►</a>
+    # or an <input type="submit" value="►">. Try all plausible selectors.
+    NEXT_SELECTORS = [
+        'a:text("►")',          # ► (U+25BA black right-pointing pointer)
+        'a:text("▶")',          # ▶ (U+25B6 black right-pointing triangle)
+        'input[value="►"]',
+        'input[value="▶"]',
+        '[id*="lnkNext" i]',        # common ASP.NET LinkButton id pattern
+        '[id*="btnNext" i]',
+        '[id*="Next" i][href]',
+        'a[href*="Next"]',
+        '[class*="next" i]',
+        '[title*="next" i]',
+        '[title*="forward" i]',
+        'input[value=">"]',
+        'a:text(">")',
+    ]
+
+    for click_num in range(MAX_DAY_CLICKS):
+        # Parse the current date from the tee-sheet header
         current_label = ""
         for loc in [
             page.locator('[class*="date" i]:not(input)'),
             page.locator('[class*="header" i]:not(input)'),
             page.locator('h2, h3, h4, strong'),
+            page.locator('body'),
         ]:
-            for i in range(loc.count()):
+            for i in range(min(loc.count(), 5)):
                 txt = (loc.nth(i).text_content() or "").strip()
                 if re.search(
                     r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}",
@@ -265,33 +281,30 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
                 break
 
         if current_label:
-            clean = re.sub(r"^[A-Za-z]+-", "", current_label).strip()
+            clean = re.sub(r"^[A-Za-z]+-\s*", "", current_label).strip()
+            parsed = False
             for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
                 try:
                     shown = datetime.strptime(clean, fmt)
+                    parsed = True
                     if shown.date() == target.date():
                         log.info("Tee sheet on target date %s", target.strftime("%Y-%m-%d"))
                         return
-                    if shown.date() < target.date():
-                        _click_first(
-                            page,
-                            ['[class*="next" i]', 'a:has-text(">")', 'button:has-text(">")'],
-                            "next-day arrow",
-                        )
-                        page.wait_for_load_state("networkidle", timeout=10_000)
-                    else:
+                    if shown.date() > target.date():
                         log.warning("Overshot target — stopping")
                         return
                     break
                 except ValueError:
                     continue
-        else:
-            _click_first(
-                page,
-                ['[class*="next" i]', 'a:has-text(">")', 'button:has-text(">")'],
-                "next-day arrow (blind)",
-            )
-            page.wait_for_load_state("networkidle", timeout=10_000)
+            if not parsed:
+                log.debug("Could not parse date label: %r", current_label)
+
+        log.debug("Clicking next-day arrow (attempt %d)", click_num + 1)
+        clicked = _click_first(page, NEXT_SELECTORS, "next-day arrow")
+        if not clicked:
+            _screenshot(page, f"no_arrow_{click_num}")
+            log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
+        page.wait_for_load_state("networkidle", timeout=10_000)
 
     log.warning("Could not navigate to %s within %d clicks", target.date(), MAX_DAY_CLICKS)
 
