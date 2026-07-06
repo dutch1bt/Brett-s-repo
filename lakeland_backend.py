@@ -36,14 +36,65 @@ DEBUG_DIR = Path(__file__).parent / "debug_screenshots"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _screenshot(page: Page, label: str) -> None:
+def _screenshot(ctx, label: str) -> None:
     DEBUG_DIR.mkdir(exist_ok=True)
     path = DEBUG_DIR / f"{label}_{datetime.now().strftime('%H%M%S')}.png"
     try:
-        page.screenshot(path=str(path), full_page=True)
+        # Frame objects don't have .screenshot(); use the parent Page
+        screenshottable = getattr(ctx, "page", ctx)
+        screenshottable.screenshot(path=str(path), full_page=True)
         log.debug("Screenshot: %s", path)
     except Exception:
         pass
+
+
+def _dump_html(ctx, label: str) -> None:
+    """Save page HTML and current URL to debug dir so artifacts contain the raw source."""
+    DEBUG_DIR.mkdir(exist_ok=True)
+    path = DEBUG_DIR / f"{label}_{datetime.now().strftime('%H%M%S')}.html"
+    try:
+        html = ctx.content()
+        url = getattr(ctx, "url", "unknown")
+        path.write_text(f"<!-- URL: {url} -->\n" + html, encoding="utf-8")
+        log.info("Saved HTML (%d bytes): %s", len(html), path.name)
+    except Exception as e:
+        log.debug("HTML dump failed: %s", e)
+
+
+def _log_clickable_elements(page: Page) -> None:
+    """Log every clickable element on the page — critical for diagnosing selector misses."""
+    try:
+        elements = page.evaluate("""
+            () => {
+                const sel = 'a, button, input[type="submit"], input[type="button"], [onclick]';
+                return [...document.querySelectorAll(sel)].map(el => ({
+                    tag: el.tagName,
+                    id: el.id || '',
+                    name: el.name || '',
+                    text: (el.textContent || el.value || '').trim().slice(0, 60),
+                    href: (el.href || '').slice(0, 120),
+                    onclick: (el.getAttribute('onclick') || '').slice(0, 120),
+                    cls: el.className || '',
+                    visible: el.offsetParent !== null,
+                }));
+            }
+        """)
+        log.info("--- Clickable elements on page (%d total) ---", len(elements))
+        for el in elements[:60]:
+            log.info(
+                "  <%s> id=%r name=%r text=%r href=%r onclick=%r visible=%s",
+                el["tag"], el["id"], el["name"],
+                el["text"][:40], el["href"][:80], el["onclick"][:80], el["visible"],
+            )
+        log.info("--- End clickable elements ---")
+    except Exception as e:
+        log.warning("Could not enumerate clickable elements: %s", e)
+
+
+def _log_frames(page: Page) -> None:
+    """Log all frames on the page (the tee sheet is sometimes inside an iframe)."""
+    frames = page.frames
+    log.info("Page frames (%d): %s", len(frames), [f.url for f in frames])
 
 
 def _credentials() -> tuple[str, str]:
@@ -159,28 +210,24 @@ def _login(page: Page) -> None:
 # Navigate to the booking page and advance the tee-sheet calendar
 # ---------------------------------------------------------------------------
 
-def _open_booking_for(page: Page, date: str, players: int) -> None:
+def _open_booking_for(page: Page, date: str, players: int):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
 
-    Primary path: go directly to BOOKING_URL (valid session cookie from login
-    gets us in without re-authenticating).  Fall back to menu nav if the
-    direct URL redirects back to the login page.
-
-    The booking page (TEE SHEET tab) shows:
-        ◄  Fri-July 17, 2026  ►
-              [Calendar]
+    Returns the Frame or Page that contains the tee-sheet content so callers
+    can pass it to _parse_slots and slot-click functions.
     """
     log.info("Opening booking page for %s ...", date)
 
     # --- Primary: navigate directly to the booking URL ---
     page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
     _screenshot(page, "03_booking_page")
+    _log_frames(page)
+    log.info("Booking page URL: %s", page.url)
 
     # Detect redirect back to login (session not accepted)
     if "pageid=9" in page.url or "login" in page.url.lower():
         log.warning("Direct URL redirected to login — trying menu navigation")
-        # Re-login and try menu nav
         _login(page)
         _click_first(
             page,
@@ -195,14 +242,95 @@ def _open_booking_for(page: Page, date: str, players: int) -> None:
         )
         page.wait_for_load_state("networkidle", timeout=30_000)
         _screenshot(page, "03b_booking_page_menu")
+        _log_frames(page)
 
     # --- Advance the tee-sheet calendar to the target date ---
     target = datetime.strptime(date, "%Y-%m-%d")
-    _navigate_teesheet_to(page, target)
+
+    # Check whether the booking content lives inside an iframe
+    booking_ctx = _find_booking_frame(page)
+
+    _navigate_teesheet_to(booking_ctx, target)
     _screenshot(page, "04_results")
+    return booking_ctx
 
 
-def _navigate_teesheet_to(page: Page, target: datetime) -> None:
+def _find_booking_frame(page: Page):
+    """
+    The Lakelands tee-sheet content may be embedded in an <iframe>.
+    Returns the Frame that contains the booking content, or the Page if inline.
+    """
+    frames = page.frames
+    if len(frames) <= 1:
+        return page
+    for frame in frames[1:]:
+        url = frame.url or ""
+        if any(kw in url for kw in ["pageid=125", "ssid=100178", "booking", "teesheet", "tee-sheet"]):
+            log.info("Found booking iframe: %s", url)
+            return frame
+    # If there's exactly one sub-frame and it's not blank, try it
+    if len(frames) == 2:
+        frame = frames[1]
+        url = frame.url or ""
+        if url and "about:blank" not in url:
+            log.info("Using only sub-frame: %s", url)
+            return frame
+    log.debug("No booking iframe detected — using main page")
+    return page
+
+
+def _js_click_next(ctx) -> bool:
+    """
+    JavaScript fallback: find the next-day navigation link via JS and click it.
+    Handles ASP.NET __doPostBack patterns and non-standard Unicode characters
+    that Playwright text selectors might miss.
+    Returns True if an element was found and clicked.
+    """
+    try:
+        clicked = ctx.evaluate(r"""
+            () => {
+                const isSingleChar = t => ['►', '▶', '>'].includes(t.trim());
+                const isNextId = s => /next|forward|suivant/i.test(s);
+                const isNextPostback = s => /next|forward/i.test(s) && /doPostBack/i.test(s);
+
+                const all = [
+                    ...document.querySelectorAll(
+                        'a, button, input[type="submit"], input[type="button"], [onclick]'
+                    )
+                ];
+
+                const el = all.find(e => {
+                    const text  = (e.textContent || e.value || '').trim();
+                    const id    = e.id    || '';
+                    const name  = e.name  || '';
+                    const href  = e.href  || '';
+                    const oc    = e.getAttribute('onclick') || '';
+                    return (
+                        isSingleChar(text)       ||
+                        isNextId(id)             ||
+                        isNextId(name)           ||
+                        isNextPostback(href)     ||
+                        isNextPostback(oc)
+                    );
+                });
+
+                if (el) {
+                    el.click();
+                    return el.id || el.name || el.textContent.trim().slice(0, 20) || '?';
+                }
+                return null;
+            }
+        """)
+        if clicked:
+            log.info("JS-clicked next element: %r", clicked)
+            return True
+        return False
+    except Exception as e:
+        log.debug("JS click-next failed: %s", e)
+        return False
+
+
+def _navigate_teesheet_to(ctx, target: datetime) -> None:
     """
     Drive the Lakelands tee-sheet date display to `target`.
 
@@ -214,18 +342,29 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
     """
     MAX_DAY_CLICKS = 20
 
+    # Dump the page HTML on first entry so we can inspect the structure
+    _dump_html(ctx, "03e_booking_page_html")
+    _log_clickable_elements(ctx)
+
     # --- Try the Calendar button first ---
     cal_clicked = _click_first(
-        page,
-        ['button:text-is("Calendar")', 'a:text-is("Calendar")', '*:text-is("Calendar")'],
+        ctx,
+        [
+            'button:text-is("Calendar")',
+            'a:text-is("Calendar")',
+            'input[value="Calendar"]',
+            'button:has-text("Calendar")',
+            'a:has-text("Calendar")',
+            '*[value*="Calendar" i]',
+        ],
         "Calendar button",
     )
     if cal_clicked:
-        page.wait_for_timeout(600)
-        _screenshot(page, "03c_calendar_picker")
+        ctx.wait_for_timeout(800)
+        _screenshot(ctx, "03c_calendar_picker")
         day_str = str(target.day)
         day_clicked = _click_first(
-            page,
+            ctx,
             [
                 f'td[data-date*="{target.strftime("%Y-%m-%d")}"] a',
                 f'.ui-datepicker-calendar td a:text-is("{day_str}")',
@@ -236,38 +375,45 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
             f"calendar day {day_str}",
         )
         if day_clicked:
-            page.wait_for_load_state("networkidle", timeout=15_000)
-            _screenshot(page, "03d_date_selected")
+            ctx.wait_for_load_state("networkidle", timeout=15_000)
+            _screenshot(ctx, "03d_date_selected")
             return
 
     # --- Fall back: read date label, click ► until we match ---
-    # The ► on Lakelands is a Unicode right-pointing triangle (►, U+25BA).
     # ASP.NET renders navigation as <a href="javascript:__doPostBack(...)">►</a>
-    # or an <input type="submit" value="►">. Try all plausible selectors.
+    # or <input type="submit" value="►">. Cover all plausible selectors then
+    # fall back to a JavaScript click that inspects href/onclick/id directly.
     NEXT_SELECTORS = [
-        'a:text("►")',          # ► (U+25BA black right-pointing pointer)
-        'a:text("▶")',          # ▶ (U+25B6 black right-pointing triangle)
+        'a:text("►")',              # ► U+25BA
+        'a:text("▶")',              # ▶ U+25B6
         'input[value="►"]',
         'input[value="▶"]',
-        '[id*="lnkNext" i]',        # common ASP.NET LinkButton id pattern
+        'a:text(">")',
+        'input[value=">"]',
+        '[id*="lnkNext" i]',
         '[id*="btnNext" i]',
+        '[id*="NextDay" i]',
+        '[name*="lnkNext" i]',
+        '[name*="btnNext" i]',
+        '[name*="NextDay" i]',
         '[id*="Next" i][href]',
+        '[id*="Next" i][onclick]',
         'a[href*="Next"]',
+        'a[onclick*="Next"]',
         '[class*="next" i]',
         '[title*="next" i]',
         '[title*="forward" i]',
-        'input[value=">"]',
-        'a:text(">")',
+        '[alt*="next" i]',
     ]
 
     for click_num in range(MAX_DAY_CLICKS):
         # Parse the current date from the tee-sheet header
         current_label = ""
         for loc in [
-            page.locator('[class*="date" i]:not(input)'),
-            page.locator('[class*="header" i]:not(input)'),
-            page.locator('h2, h3, h4, strong'),
-            page.locator('body'),
+            ctx.locator('[class*="date" i]:not(input)'),
+            ctx.locator('[class*="header" i]:not(input)'),
+            ctx.locator('h2, h3, h4, strong'),
+            ctx.locator('body'),
         ]:
             for i in range(min(loc.count(), 5)):
                 txt = (loc.nth(i).text_content() or "").strip()
@@ -300,11 +446,17 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
                 log.debug("Could not parse date label: %r", current_label)
 
         log.debug("Clicking next-day arrow (attempt %d)", click_num + 1)
-        clicked = _click_first(page, NEXT_SELECTORS, "next-day arrow")
+        clicked = _click_first(ctx, NEXT_SELECTORS, "next-day arrow")
         if not clicked:
-            _screenshot(page, f"no_arrow_{click_num}")
-            log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
-        page.wait_for_load_state("networkidle", timeout=10_000)
+            # Last resort: JavaScript click scanning all elements
+            clicked = _js_click_next(ctx)
+            if not clicked:
+                _screenshot(ctx, f"no_arrow_{click_num}")
+                log.warning("Could not find next-day arrow on attempt %d", click_num + 1)
+                if click_num == 0:
+                    # Extra diagnostics on first failure
+                    _dump_html(ctx, f"no_arrow_attempt_{click_num}_html")
+        ctx.wait_for_load_state("networkidle", timeout=10_000)
 
     log.warning("Could not navigate to %s within %d clicks", target.date(), MAX_DAY_CLICKS)
 
@@ -313,7 +465,7 @@ def _navigate_teesheet_to(page: Page, target: datetime) -> None:
 # Parse tee times from results page
 # ---------------------------------------------------------------------------
 
-def _parse_slots(page: Page, players: int) -> list[dict]:
+def _parse_slots(ctx, players: int) -> list[dict]:
     """
     Extract available tee time slots from the Lakelands booking page.
 
@@ -327,10 +479,10 @@ def _parse_slots(page: Page, players: int) -> list[dict]:
     # Lakelands renders tee times as clickable table rows or links.
     # Each bookable row contains a time string like "7:30 AM".
     # Try table rows first, then fall back to generic clickable containers.
-    candidates = page.locator("table tr")
+    candidates = ctx.locator("table tr")
     if candidates.count() <= 1:
         # Fall back to div/link-based listing
-        candidates = page.locator("a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]")
+        candidates = ctx.locator("a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]")
 
     for i in range(candidates.count()):
         el = candidates.nth(i)
@@ -434,8 +586,8 @@ def fetch_available_tee_times(date: str, players: int) -> list[dict]:
         page = browser.new_page()
         try:
             _login(page)
-            _open_booking_for(page, date, players)
-            slots = _parse_slots(page, players)
+            ctx = _open_booking_for(page, date, players)
+            slots = _parse_slots(ctx, players)
             # Strip internal keys before returning
             return [
                 {k: v for k, v in s.items() if not k.startswith("_")}
@@ -465,8 +617,8 @@ def make_reservation(
         page = browser.new_page()
         try:
             _login(page)
-            _open_booking_for(page, date, players)
-            slots = _parse_slots(page, players)
+            ctx = _open_booking_for(page, date, players)
+            slots = _parse_slots(ctx, players)
 
             # Find the slot matching the requested time
             target = next(
@@ -485,9 +637,9 @@ def make_reservation(
             # Re-create the same candidates locator used in _parse_slots so
             # _locator_index maps to the correct element.
             loc_idx = target["_locator_index"]
-            candidates = page.locator("table tr")
+            candidates = ctx.locator("table tr")
             if candidates.count() <= 1:
-                candidates = page.locator(
+                candidates = ctx.locator(
                     "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
                 )
 
