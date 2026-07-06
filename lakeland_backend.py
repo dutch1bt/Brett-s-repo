@@ -842,79 +842,75 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     except Exception as e:
         log.warning("Slot diagnostic failed: %s", e)
 
-    # Build a list of contexts to scan: the main ctx plus any sub-frames that
-    # may have been loaded by the tee-sheet navigation (some platforms load the
-    # tee sheet into an iframe that was initially about:blank).
-    contexts_to_scan = [ctx]
-    try:
-        main_page = ctx if hasattr(ctx, 'frames') else None
-        if main_page:
-            for frame in main_page.frames[1:]:
-                url = frame.url or ""
-                if url and "about:blank" not in url:
-                    log.info("Also scanning sub-frame: %s", url[:120])
-                    contexts_to_scan.append(frame)
-    except Exception:
-        pass
+    # Primary approach: Lakelands (Jonas Club Software) marks available tee times
+    # with the CSS class NC_TimeSlotPanelSlotAvailable on the <td> that holds the
+    # time cell. Unavailable/full slots use NC_TimeSlotPanelNoSlots. The time is
+    # in a child <span class="timeText">. This is more reliable than text scanning.
+    avail_sel = "td[class*='NC_TimeSlotPanelSlotAvailable']"
+    available_cells = ctx.locator(avail_sel)
+    n_avail = available_cells.count()
+    log.info("NC_TimeSlotPanelSlotAvailable cells: %d", n_avail)
 
-    for scan_ctx in contexts_to_scan:
-        if slots:
-            break   # already found results in a previous context
+    for i in range(n_avail):
+        cell = available_cells.nth(i)
+        # Time lives in a <span class="timeText"> inside the cell
+        time_span = cell.locator("span.timeText").first
+        if time_span.count():
+            raw = (time_span.text_content() or "").strip()
+        else:
+            raw = (cell.text_content() or "").strip()
+        t = _parse_time(raw)
+        if not t:
+            log.warning("Available cell %d: could not parse time from %r", i, raw[:60])
+            continue
+        log.info("Found available slot %d: time=%r", i, t)
+        slots.append({
+            "time": t,
+            "available_spots": 4,
+            "price_per_player": 0.0,
+            "cart_included": False,
+            "_locator_index": i,
+            "_slot_selector": avail_sel,
+        })
 
-        # Lakelands renders tee times as clickable table rows or links.
-        # Each bookable row contains a time string like "7:30 AM".
-        # Try table rows first (including tr[onclick] which Jonas/Club Prophet uses),
-        # then fall back to generic clickable containers.
-        candidates = scan_ctx.locator("table tr")
+    # Fallback: if CSS class approach found nothing, do a broad text scan
+    # (keeps the code working on other platforms or if the class names change).
+    if not slots:
+        log.info("CSS class scan found 0 slots — falling back to table-row text scan")
+        # Log raw text_content of first 5 rows that contain a colon, for diagnosis
+        candidates = ctx.locator("table tr")
         row_count = candidates.count()
-        log.info("Scanning %d table rows for tee times (ctx=%s)",
-                 row_count, getattr(scan_ctx, 'url', type(scan_ctx).__name__)[:80])
-        if row_count <= 1:
-            # Fall back to div/link-based listing
-            candidates = scan_ctx.locator(
-                "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
-            )
-            log.info("Fell back to link/button scan, count=%d", candidates.count())
-
-        for i in range(candidates.count()):
+        log.info("Fallback: scanning %d table rows", row_count)
+        rows_logged = 0
+        for i in range(row_count):
             el = candidates.nth(i)
             text = (el.text_content() or "").strip()
+            if ":" in text and rows_logged < 10:
+                log.info("  raw row[%d] repr: %r", i, text[:120])
+                rows_logged += 1
             t = _parse_time(text)
             if not t:
                 continue
-
-            # Skip obvious header rows
             if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
                 continue
-
-            # Accept rows/cells that are clickable via any mechanism:
-            # <a>, <button>, onclick attribute, or cursor:pointer style.
-            # Jonas Club Software / Club Prophet often uses <tr onclick="...">
-            # without any child <a> or <button>.
             is_clickable = el.evaluate("""e => {
                 if (e.tagName === 'A' || e.tagName === 'BUTTON') return true;
                 if (e.getAttribute('onclick')) return true;
-                const kids = e.querySelectorAll('a,button,input[type=submit],input[type=button]');
+                const kids = e.querySelectorAll('a,button,input[type=submit],input[type=button],[onclick]');
                 if (kids.length) return true;
-                const style = window.getComputedStyle(e).cursor;
-                if (style === 'pointer') return true;
-                return false;
+                return window.getComputedStyle(e).cursor === 'pointer';
             }""")
             if not is_clickable:
                 continue
-
-            log.info("Found slot: time=%r text=%r", t, text[:80])
+            log.info("Fallback found slot: time=%r text=%r", t, text[:80])
             price_match = re.search(r"\$\s*([\d.]+)", text)
-            price = float(price_match.group(1)) if price_match else 0.0
-            cart = bool(re.search(r"cart|riding", text, re.IGNORECASE))
-
             slots.append({
                 "time": t,
-                "available_spots": 4,   # Lakelands doesn't show spot count on the list
-                "price_per_player": price,
-                "cart_included": cart,
+                "available_spots": 4,
+                "price_per_player": float(price_match.group(1)) if price_match else 0.0,
+                "cart_included": bool(re.search(r"cart|riding", text, re.IGNORECASE)),
                 "_locator_index": i,
-                "_ctx_index": contexts_to_scan.index(scan_ctx),
+                "_slot_selector": "table tr",
             })
 
     log.info("Parsed %d available slot(s)", len(slots))
@@ -1034,32 +1030,24 @@ def make_reservation(
                     ),
                 }
 
-            # Re-create the same candidates locator used in _parse_slots so
-            # _locator_index maps to the correct element. If the slot was found
-            # in a sub-frame (_ctx_index > 0), reconstruct that frame's locator.
+            # Re-locate the slot cell using the selector stored during parsing,
+            # then click the "Reserve" element inside it (or the cell itself).
             loc_idx = target["_locator_index"]
-            ctx_idx = target.get("_ctx_index", 0)
-            if ctx_idx > 0:
-                try:
-                    non_blank = [f for f in page.frames[1:] if f.url and "about:blank" not in f.url]
-                    book_ctx = non_blank[ctx_idx - 1] if ctx_idx - 1 < len(non_blank) else ctx
-                except Exception:
-                    book_ctx = ctx
-            else:
-                book_ctx = ctx
-            candidates = book_ctx.locator("table tr")
-            if candidates.count() <= 1:
-                candidates = book_ctx.locator(
-                    "a, button, [class*='tee' i], [class*='slot' i], [class*='time' i]"
-                )
-
-            el = candidates.nth(loc_idx)
-            book_el = el.locator("a, button, input[type='submit'], input[type='button']").first
-            log.info("Clicking book for %s on %s ...", time, date)
-            if book_el.count():
-                book_el.click()
+            slot_sel = target.get("_slot_selector", "td[class*='NC_TimeSlotPanelSlotAvailable']")
+            el = ctx.locator(slot_sel).nth(loc_idx)
+            log.info("Clicking Reserve for %s on %s (selector=%s, idx=%d) ...",
+                     time, date, slot_sel, loc_idx)
+            # Try clicking the "Reserve" text link first, then fall back to the cell
+            reserve_el = el.locator(
+                "a:has-text('Reserve'), button:has-text('Reserve'), "
+                "input[value='Reserve'], span:has-text('Reserve')"
+            ).first
+            if reserve_el.count():
+                reserve_el.click()
+                log.info("Clicked Reserve link")
             else:
                 el.click(force=True)
+                log.info("Clicked slot cell (no Reserve link found)")
 
             # Fill the "Book Tee Time" modal (party size + player names P2–P4)
             _fill_booking_modal(page, party_size, player_names)
