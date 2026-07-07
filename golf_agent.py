@@ -24,28 +24,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# BOOKING BACKEND — replace these stubs with your club's actual API/scraper
+# BOOKING BACKEND — Lakelands Golf (Playwright) with stub fallback
 # ---------------------------------------------------------------------------
-# These functions are called by the agent's tools. Swap in real implementations
-# (e.g., HTTP requests to your club's booking API, or Playwright browser
-# automation against their website) without changing anything else.
+
+try:
+    import lakeland_backend as _backend
+    _USING_REAL_BACKEND = True
+except ImportError:
+    _backend = None  # type: ignore
+    _USING_REAL_BACKEND = False
+
 
 def _fetch_available_tee_times(date: str, players: int) -> list[dict]:
-    """
-    Query the club's booking system for available tee times.
-
-    Replace with:
-      - HTTP call to your club's REST API, or
-      - Playwright/Selenium to scrape their booking page
-
-    Args:
-        date: ISO date string YYYY-MM-DD
-        players: Number of players (1-4)
-
-    Returns:
-        List of dicts with keys: time, available_spots, price_per_player, cart_included
-    """
-    # --- STUB: returns realistic-looking fake data ---
+    if _USING_REAL_BACKEND:
+        return _backend.fetch_available_tee_times(date, players)
+    # --- STUB fallback ---
     base_times = ["7:00 AM", "7:12 AM", "7:24 AM", "7:48 AM", "8:00 AM",
                   "8:24 AM", "9:00 AM", "10:00 AM", "11:00 AM", "1:00 PM",
                   "2:00 PM", "3:00 PM", "4:00 PM"]
@@ -74,15 +67,9 @@ def _make_reservation(
     player_names: list[str],
     member_id: str,
 ) -> dict:
-    """
-    Submit a tee time reservation.
-
-    Replace with your club's actual booking call.
-
-    Returns:
-        Dict with keys: success (bool), confirmation_number, message
-    """
-    # --- STUB: always succeeds ---
+    if _USING_REAL_BACKEND:
+        return _backend.make_reservation(date, time, players, player_names, member_id)
+    # --- STUB fallback ---
     conf = f"GTT-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     return {
         "success": True,
@@ -95,27 +82,15 @@ def _make_reservation(
 
 
 def _cancel_reservation(confirmation_number: str, member_id: str) -> dict:
-    """
-    Cancel an existing reservation.
-
-    Returns:
-        Dict with keys: success (bool), message
-    """
-    # --- STUB: always succeeds ---
-    return {
-        "success": True,
-        "message": f"Reservation {confirmation_number} has been cancelled.",
-    }
+    if _USING_REAL_BACKEND:
+        return _backend.cancel_reservation(confirmation_number, member_id)
+    return {"success": True, "message": f"Reservation {confirmation_number} has been cancelled."}
 
 
 def _fetch_my_reservations(member_id: str) -> list[dict]:
-    """
-    Retrieve upcoming reservations for a member.
-
-    Returns:
-        List of dicts with keys: confirmation_number, date, time, players, status
-    """
-    # --- STUB: returns one fake upcoming reservation ---
+    if _USING_REAL_BACKEND:
+        return _backend.fetch_my_reservations(member_id)
+    # --- STUB fallback ---
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     return [
         {

@@ -1,19 +1,18 @@
 """
-Automatic Sunday Tee Time Reserver
+Automatic Sunday Tee Time Reserver — Lakelands Golf
 
-Designed to be run by cron at the exact moment your club opens reservations
-(typically midnight or a set hour, exactly 2 weeks in advance).
-
-Checks availability for the Sunday that is exactly 14 days from today,
-then books the first available slot. Logs every run to auto_reserve.log.
+Cron fires at 7:31 AM every Sunday. Books the 7:30 AM tee time on the
+Sunday exactly 14 days out (Lakelands opens the booking window at 7:30 AM,
+two weeks in advance).
 
 Usage:
     python auto_reserve.py [--dry-run]
 
     --dry-run  Check availability and log what would be booked, but don't
-               actually submit the reservation. Useful for testing.
+               submit. Useful for testing.
 
-Cron setup (see bottom of this file for instructions).
+Cron line (add via `crontab -e`):
+    31 7 * * 0 /usr/bin/python3 /path/to/auto_reserve.py
 """
 
 import argparse
@@ -32,15 +31,23 @@ load_dotenv()
 # CONFIGURATION — set via .env or environment variables
 # ---------------------------------------------------------------------------
 
-PLAYERS: int = int(os.getenv("AUTO_RESERVE_PLAYERS", "1"))
+PLAYERS: int = int(os.getenv("AUTO_RESERVE_PLAYERS", "4"))
 
-# Comma-separated player names, e.g. "Brett,John,Sarah"
-_raw_names = os.getenv("AUTO_RESERVE_PLAYER_NAMES", "")
+# Comma-separated player names — P1 (Brett) is auto-filled by the club system;
+# include all names here so they're logged and passed to the backend.
+_raw_names = os.getenv(
+    "AUTO_RESERVE_PLAYER_NAMES",
+    "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
+)
 PLAYER_NAMES: list[str] = [n.strip() for n in _raw_names.split(",") if n.strip()]
 
 # If player names aren't configured, fall back to member ID as sole name
 if not PLAYER_NAMES:
     PLAYER_NAMES = [os.getenv("GOLF_CLUB_MEMBER_ID", "Member")]
+
+# Preferred tee time — book this slot if available, otherwise fall back to
+# the earliest slot. Format must match what the booking site returns (e.g. "7:30 AM").
+PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
 
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
@@ -76,61 +83,78 @@ def target_sunday() -> str:
     return target.strftime("%Y-%m-%d")
 
 
-def first_available_slot(date: str, players: int) -> dict | None:
-    """Return the earliest available tee time slot, or None if none exist."""
-    slots = golf_agent._fetch_available_tee_times(date, players)
-    return slots[0] if slots else None
+def pick_slot(slots: list[dict], preferred_time: str) -> dict | None:
+    """
+    Return the preferred time slot if available, otherwise the earliest slot.
+    Comparison is case-insensitive and ignores extra spaces.
+    """
+    if not slots:
+        return None
+    preferred_norm = preferred_time.strip().upper()
+    for slot in slots:
+        if slot["time"].strip().upper() == preferred_norm:
+            return slot
+    log.warning(
+        "Preferred time %s not available — falling back to earliest slot: %s",
+        preferred_time, slots[0]["time"],
+    )
+    return slots[0]
 
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run(dry_run: bool = False) -> int:
+def run(dry_run: bool = False, date_override: str | None = None) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
     Called directly by cron — exit code matters for monitoring.
     """
-    member_id = os.getenv("GOLF_CLUB_MEMBER_ID", "DEMO_MEMBER")
     club_name = os.getenv("GOLF_CLUB_NAME", "the Golf Club")
 
     log.info("=== Auto-reserve started%s ===", " [DRY RUN]" if dry_run else "")
-    log.info("Club: %s | Member: %s | Players: %d (%s)",
-             club_name, member_id, PLAYERS, ", ".join(PLAYER_NAMES))
+    log.info("Club: %s | Players: %d (%s) | Preferred time: %s",
+             club_name, PLAYERS, ", ".join(PLAYER_NAMES), PREFERRED_TIME)
 
     # 1. Determine target date
-    try:
-        date = target_sunday()
-    except ValueError as e:
-        log.error("Date error: %s", e)
-        return 1
+    if date_override:
+        date = date_override
+        log.info("Using override date: %s", date)
+    else:
+        try:
+            date = target_sunday()
+        except ValueError as e:
+            log.error("Date error: %s", e)
+            return 1
 
     log.info("Target Sunday: %s", date)
 
-    # 2. Fetch the first available slot
-    slot = first_available_slot(date, PLAYERS)
-    if not slot:
+    # 2. Fetch available slots
+    slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
+    if not slots:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
+    # 3. Pick preferred time (7:30 AM), fall back to earliest if unavailable
+    slot = pick_slot(slots, PREFERRED_TIME)
     log.info(
-        "First available slot: %s — $%s/player, cart %s",
+        "Booking slot: %s — $%s/player, cart %s",
         slot["time"],
-        slot["price_per_player"],
-        "included" if slot["cart_included"] else "not included",
+        slot.get("price_per_player", "?"),
+        "included" if slot.get("cart_included") else "not included",
     )
 
-    # 3. Book it (unless dry run)
     if dry_run:
         log.info("DRY RUN — would reserve %s on %s for %s.", slot["time"], date, ", ".join(PLAYER_NAMES))
         return 0
 
+    # 4. Submit the reservation
     result = golf_agent._make_reservation(
         date=date,
         time=slot["time"],
         players=PLAYERS,
         player_names=PLAYER_NAMES,
-        member_id=member_id,
+        member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
     )
 
     if result.get("success"):
@@ -143,12 +167,16 @@ def run(dry_run: bool = False) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Auto-reserve the first Sunday tee time 2 weeks out.")
+    parser = argparse.ArgumentParser(
+        description="Auto-reserve the 7:30 AM Sunday tee time at Lakelands, 2 weeks out."
+    )
     parser.add_argument("--dry-run", action="store_true",
                         help="Check availability but do not submit the reservation.")
+    parser.add_argument("--date", metavar="YYYY-MM-DD",
+                        help="Override the target date (skips the Sunday-14-day check). "
+                             "Useful for one-off tests.")
     args = parser.parse_args()
-
-    sys.exit(run(dry_run=args.dry_run))
+    sys.exit(run(dry_run=args.dry_run, date_override=args.date))
 
 
 if __name__ == "__main__":
@@ -159,8 +187,8 @@ if __name__ == "__main__":
 # CRON SETUP
 # ---------------------------------------------------------------------------
 #
-# Your club opens reservations at a fixed time exactly 14 days in advance.
-# You need cron to fire this script at that exact minute, every Sunday.
+# Lakelands opens at 7:30 AM on Sundays, 2 weeks in advance.
+# We fire at 7:31 AM — one minute later — to let the window open cleanly.
 #
 # Step 1 — find your Python path:
 #   which python3
@@ -168,9 +196,16 @@ if __name__ == "__main__":
 # Step 2 — edit your crontab:
 #   crontab -e
 #
-# Step 3 — add a line using this template:
+# Step 3 — add this exact line (update the path):
 #
-#   MINUTE HOUR * * 0 /path/to/python3 /path/to/auto_reserve.py >> /path/to/auto_reserve.log 2>&1
+#   31 7 * * 0 /usr/bin/python3 /home/brett/golf/auto_reserve.py
+#
+#   Breakdown:  31 = minute, 7 = hour (7:31 AM), * * 0 = every Sunday
+#
+# Step 4 — verify .env is present next to this script (cron has no shell env).
+#
+# Step 5 — test without waiting for Sunday:
+#   python auto_reserve.py --dry-run
 #
 #   Field breakdown:
 #     MINUTE  — the exact minute the booking window opens (e.g. 0)

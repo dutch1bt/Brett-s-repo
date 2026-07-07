@@ -1,0 +1,95 @@
+name: Book Sunday Tee Time
+
+on:
+  schedule:
+    # 7:30 AM EDT (UTC-4) every Sunday = 11:30 AM UTC
+    - cron: '30 11 * * 0'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to book (YYYY-MM-DD). Leave empty to auto-compute 14 days out.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — check availability but do not submit booking'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Book tee time
+        id: book
+        env:
+          GOLF_CLUB_NAME: Lakelands Golf and Country Club
+          GOLF_CLUB_USERNAME: ${{ secrets.GOLF_CLUB_USERNAME }}
+          GOLF_CLUB_PASSWORD: ${{ secrets.GOLF_CLUB_PASSWORD }}
+          AUTO_RESERVE_PLAYERS: ${{ secrets.AUTO_RESERVE_PLAYERS }}
+          AUTO_RESERVE_PLAYER_NAMES: ${{ secrets.AUTO_RESERVE_PLAYER_NAMES }}
+          AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.date }}"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          python auto_reserve.py $ARGS
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: debug_screenshots/
+          if-no-files-found: ignore
+
+      - name: Send SMS notification
+        if: always()
+        env:
+          PHONE: ${{ secrets.PHONE_NUMBER }}
+        run: |
+          if [ -z "$PHONE" ]; then
+            echo "PHONE_NUMBER secret not set — skipping SMS"
+            exit 0
+          fi
+
+          # Compute target date (same logic as auto_reserve.py)
+          TARGET=$(python3 -c "
+          from datetime import date, timedelta
+          override = '${{ github.event.inputs.date }}'
+          if override:
+              print(override)
+          else:
+              print((date.today() + timedelta(days=14)).strftime('%Y-%m-%d'))
+          ")
+
+          OUTCOME="${{ steps.book.outcome }}"
+          if [ "$OUTCOME" = "success" ]; then
+            MSG="Golf booked! 7:30 AM on $TARGET at Lakelands. Check GitHub Actions for full details."
+          else
+            MSG="Golf booking FAILED for $TARGET. Check GitHub Actions for details: github.com/${{ github.repository }}/actions"
+          fi
+
+          curl -s -X POST https://textbelt.com/text \
+            --data-urlencode "phone=$PHONE" \
+            --data-urlencode "message=$MSG" \
+            -d "key=textbelt" || echo "SMS send failed (curl error)"
