@@ -83,22 +83,9 @@ def target_sunday() -> str:
     return target.strftime("%Y-%m-%d")
 
 
-def pick_slot(slots: list[dict], preferred_time: str) -> dict | None:
-    """
-    Return the preferred time slot if available, otherwise the earliest slot.
-    Comparison is case-insensitive and ignores extra spaces.
-    """
-    if not slots:
-        return None
-    preferred_norm = preferred_time.strip().upper()
-    for slot in slots:
-        if slot["time"].strip().upper() == preferred_norm:
-            return slot
-    log.warning(
-        "Preferred time %s not available — falling back to earliest slot: %s",
-        preferred_time, slots[0]["time"],
-    )
-    return slots[0]
+def pick_slot(slots: list[dict]) -> dict | None:
+    """Return the earliest available slot."""
+    return slots[0] if slots else None
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +100,8 @@ def run(dry_run: bool = False, date_override: str | None = None) -> int:
     club_name = os.getenv("GOLF_CLUB_NAME", "the Golf Club")
 
     log.info("=== Auto-reserve started%s ===", " [DRY RUN]" if dry_run else "")
-    log.info("Club: %s | Players: %d (%s) | Preferred time: %s",
-             club_name, PLAYERS, ", ".join(PLAYER_NAMES), PREFERRED_TIME)
+    log.info("Club: %s | Players: %d (%s)",
+             club_name, PLAYERS, ", ".join(PLAYER_NAMES))
 
     # 1. Determine target date
     if date_override:
@@ -135,8 +122,8 @@ def run(dry_run: bool = False, date_override: str | None = None) -> int:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
-    # 3. Pick preferred time (7:30 AM), fall back to earliest if unavailable
-    slot = pick_slot(slots, PREFERRED_TIME)
+    # 3. Pick the earliest available slot
+    slot = pick_slot(slots)
     log.info(
         "Booking slot: %s — $%s/player, cart %s",
         slot["time"],
