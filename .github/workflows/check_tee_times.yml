@@ -1,0 +1,43 @@
+name: Check Available Tee Times
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to check (YYYY-MM-DD)'
+        required: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Fetch available tee times
+        env:
+          GOLF_CLUB_USERNAME: ${{ secrets.GOLF_CLUB_USERNAME }}
+          GOLF_CLUB_PASSWORD: ${{ secrets.GOLF_CLUB_PASSWORD }}
+        run: python check_tee_times.py '${{ github.event.inputs.date }}'
+
+      - name: Commit results to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add latest_times.json
+          git diff --cached --quiet || git commit -m "Tee time check: ${{ github.event.inputs.date }}"
+          git push
