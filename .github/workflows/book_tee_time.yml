@@ -10,6 +10,10 @@ on:
         description: 'Date to book (YYYY-MM-DD). Leave empty to auto-compute 14 days out.'
         required: false
         default: ''
+      time_preference:
+        description: 'Preferred tee time e.g. "1:00 PM". Leave empty for earliest available.'
+        required: false
+        default: ''
       dry_run:
         description: 'Dry run — check availability but do not submit booking'
         required: false
@@ -49,10 +53,13 @@ jobs:
           if [ -n "${{ github.event.inputs.date }}" ]; then
             ARGS="--date ${{ github.event.inputs.date }}"
           fi
+          if [ -n "${{ github.event.inputs.time_preference }}" ]; then
+            ARGS="$ARGS --time '${{ github.event.inputs.time_preference }}'"
+          fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
-          python auto_reserve.py $ARGS
+          eval python auto_reserve.py $ARGS
 
       - name: Upload debug screenshots
         if: always()

@@ -83,25 +83,50 @@ def target_sunday() -> str:
     return target.strftime("%Y-%m-%d")
 
 
-def pick_slot(slots: list[dict]) -> dict | None:
-    """Return the earliest available slot."""
-    return slots[0] if slots else None
+def _time_to_mins(time_str: str) -> int | None:
+    """Parse '7:30 AM' or '1:00 PM' → minutes since midnight. Returns None on failure."""
+    for fmt in ("%I:%M %p", "%I %p"):
+        try:
+            t = datetime.strptime(time_str.strip().upper(), fmt)
+            return t.hour * 60 + t.minute
+        except ValueError:
+            continue
+    return None
+
+
+def pick_slot(slots: list[dict], target_time: str | None = None) -> dict | None:
+    """
+    Return the slot closest to target_time (e.g. '1:00 PM').
+    If target_time is empty or unparseable, return the earliest slot.
+    """
+    if not slots:
+        return None
+    if not target_time:
+        return slots[0]
+    target_mins = _time_to_mins(target_time)
+    if target_mins is None:
+        log.warning("Could not parse target time %r — using earliest slot", target_time)
+        return slots[0]
+    best = min(slots, key=lambda s: abs((_time_to_mins(s["time"]) or 0) - target_mins))
+    log.info("Target time %s → closest available slot: %s", target_time, best["time"])
+    return best
 
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run(dry_run: bool = False, date_override: str | None = None) -> int:
+def run(dry_run: bool = False, date_override: str | None = None, time_preference: str | None = None) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
     Called directly by cron — exit code matters for monitoring.
     """
     club_name = os.getenv("GOLF_CLUB_NAME", "the Golf Club")
+    target_time = time_preference or os.getenv("AUTO_RESERVE_TIME_PREFERENCE", "")
 
     log.info("=== Auto-reserve started%s ===", " [DRY RUN]" if dry_run else "")
-    log.info("Club: %s | Players: %d (%s)",
-             club_name, PLAYERS, ", ".join(PLAYER_NAMES))
+    log.info("Club: %s | Players: %d (%s) | Time preference: %s",
+             club_name, PLAYERS, ", ".join(PLAYER_NAMES), target_time or "earliest")
 
     # 1. Determine target date
     if date_override:
@@ -122,8 +147,8 @@ def run(dry_run: bool = False, date_override: str | None = None) -> int:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
-    # 3. Pick the earliest available slot
-    slot = pick_slot(slots)
+    # 3. Pick the best slot (earliest, or closest to target_time if specified)
+    slot = pick_slot(slots, target_time or None)
     log.info(
         "Booking slot: %s — $%s/player, cart %s",
         slot["time"],
@@ -162,8 +187,11 @@ def main() -> None:
     parser.add_argument("--date", metavar="YYYY-MM-DD",
                         help="Override the target date (skips the Sunday-14-day check). "
                              "Useful for one-off tests.")
+    parser.add_argument("--time", metavar="HH:MM AM/PM",
+                        help="Preferred tee time (e.g. '1:00 PM'). "
+                             "Books the closest available slot. Defaults to earliest.")
     args = parser.parse_args()
-    sys.exit(run(dry_run=args.dry_run, date_override=args.date))
+    sys.exit(run(dry_run=args.dry_run, date_override=args.date, time_preference=args.time))
 
 
 if __name__ == "__main__":
