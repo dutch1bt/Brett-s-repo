@@ -41,3 +41,39 @@ jobs:
           git add latest_times.json
           git diff --cached --quiet || git commit -m "Tee time check: ${{ github.event.inputs.date }}"
           git push
+
+      - name: Send SMS with available times
+        if: always()
+        env:
+          PHONE: ${{ secrets.PHONE_NUMBER }}
+        run: |
+          if [ -z "$PHONE" ]; then
+            echo "PHONE_NUMBER secret not set — skipping SMS"
+            exit 0
+          fi
+
+          DATE="${{ github.event.inputs.date }}"
+
+          # Read results from the JSON file written by check_tee_times.py
+          EARLIEST=$(python3 -c "
+          import json, sys
+          try:
+              d = json.load(open('latest_times.json'))
+              earliest = d.get('earliest')
+              slots = d.get('slots', [])
+              if not earliest:
+                  print('No times available')
+              elif len(slots) <= 6:
+                  print(earliest + ' (also: ' + ', '.join(slots[1:]) + ')' if len(slots) > 1 else earliest)
+              else:
+                  print(earliest + ' (and ' + str(len(slots)-1) + ' more through ' + slots[-1] + ')')
+          except Exception as e:
+              print('Error reading results: ' + str(e))
+          " 2>/dev/null || echo "Could not read results")
+
+          MSG="Lakelands $DATE: $EARLIEST"
+
+          curl -s -X POST https://textbelt.com/text \
+            --data-urlencode "phone=$PHONE" \
+            --data-urlencode "message=$MSG" \
+            -d "key=textbelt" || echo "SMS send failed"
