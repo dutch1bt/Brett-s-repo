@@ -72,13 +72,18 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def target_sunday() -> str:
-    """Return the date of the Sunday exactly 14 days from today (YYYY-MM-DD)."""
+    """Return the date 14 days from today (YYYY-MM-DD).
+
+    Enforces that today is Sunday only when triggered by the cron schedule.
+    Manual triggers (Siri, GitHub UI) can run any day of the week.
+    """
     today = datetime.now().date()
     target = today + timedelta(days=14)
-    if target.weekday() != 6:  # 6 = Sunday
+    is_cron = os.getenv("GITHUB_EVENT_NAME") == "schedule"
+    if is_cron and target.weekday() != 6:  # 6 = Sunday
         raise ValueError(
             f"Today is {today.strftime('%A')} — target date {target} is not a Sunday. "
-            "This script expects to run on a Sunday so the target is also a Sunday."
+            "Cron should only run on Sundays."
         )
     return target.strftime("%Y-%m-%d")
 
