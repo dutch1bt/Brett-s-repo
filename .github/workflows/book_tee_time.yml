@@ -113,9 +113,9 @@ try:
     dt = d.get('date', 'TBD')
     tm = d.get('time', 'TBD')
     players = ', '.join(d.get('players', []))
-    print(f'Lakelands tee time booked! {dt} at {tm}. Group: {players}')
+    print(f'Birdie BOT: Tee time booked! {dt} at {tm} - Lakelands. Group: {players}')
 except Exception as e:
-    print('Tee time booked at Lakelands! Check GitHub Actions for details.')
+    print('Birdie BOT: Tee time booked at Lakelands! Check GitHub Actions for details.')
 ")
             # Text everyone in the group
             PHONES="${GROUP_PHONES:-$PHONE}"
@@ -126,6 +126,6 @@ except Exception as e:
             done
           else
             # Only text Brett on failure
-            FAIL_MSG="Golf booking FAILED for $TARGET. Check GitHub Actions: github.com/${{ github.repository }}/actions"
+            FAIL_MSG="Birdie BOT: Booking FAILED for $TARGET. Check GitHub Actions: github.com/${{ github.repository }}/actions"
             send_sms "$PHONE" "$FAIL_MSG"
           fi
