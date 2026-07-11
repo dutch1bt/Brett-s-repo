@@ -14,7 +14,7 @@ jobs:
           TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
         run: |
           KEY="${TEXTBELT_KEY:-textbelt}"
-          MSG="Birdie BOT: SMS test successful! Your tee time bot is ready."
+          MSG="TeeHawk 🤖 🦅: SMS test successful! Your tee time bot is ready."
 
           send_sms() {
             curl -s -X POST https://textbelt.com/text \
