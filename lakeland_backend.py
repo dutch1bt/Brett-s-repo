@@ -1489,17 +1489,26 @@ def make_reservation(
                 body,
                 re.IGNORECASE,
             )
-            conf_number = (
-                conf_match.group(1)
-                if conf_match
-                else f"LG-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            )
+            # No confirmation number = booking did not complete successfully
+            if not conf_match:
+                _screenshot(page, "error_no_confirmation")
+                return {
+                    "success": False,
+                    "message": (
+                        "Booking submitted but no confirmation number found on the page. "
+                        "The tee time may not have been reserved. Check debug_screenshots."
+                    ),
+                }
+            conf_number = conf_match.group(1)
 
             # Check for visible error messages (not JS variable names)
             ERROR_PHRASES = [
                 "unable to reserve", "not available", "already reserved",
                 "invalid player", "booking failed", "cannot be reserved",
                 "sorry", "please try again", "time is not available",
+                "already have a reservation", "already have a booking",
+                "maximum", "limit reached", "duplicate", "existing reservation",
+                "you have a tee time", "one reservation per",
             ]
             if any(kw in body.lower() for kw in ERROR_PHRASES):
                 _screenshot(page, "error_booking_failed")
