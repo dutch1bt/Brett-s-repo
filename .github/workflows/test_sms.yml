@@ -1,0 +1,32 @@
+name: Test SMS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sms:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test SMS
+        env:
+          PHONE: ${{ secrets.PHONE_NUMBER }}
+          GROUP_PHONES: ${{ secrets.GROUP_PHONE_NUMBERS }}
+          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
+        run: |
+          KEY="${TEXTBELT_KEY:-textbelt}"
+          MSG="Birdie BOT: SMS test successful! Your tee time bot is ready."
+
+          send_sms() {
+            curl -s -X POST https://textbelt.com/text \
+              --data-urlencode "phone=$1" \
+              --data-urlencode "message=$MSG" \
+              -d "key=$KEY"
+            echo ""
+          }
+
+          PHONES="${GROUP_PHONES:-$PHONE}"
+          IFS=',' read -ra NUMS <<< "$PHONES"
+          for NUM in "${NUMS[@]}"; do
+            NUM=$(echo "$NUM" | tr -d ' ')
+            [ -n "$NUM" ] && send_sms "$NUM"
+          done
