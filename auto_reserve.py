@@ -101,8 +101,9 @@ def _time_to_mins(time_str: str) -> int | None:
 
 def pick_slot(slots: list[dict], target_time: str | None = None) -> dict | None:
     """
-    Return the slot closest to target_time (e.g. '1:00 PM').
+    Return the earliest slot at or after target_time (e.g. '1:00 PM').
     If target_time is empty or unparseable, return the earliest slot.
+    Falls back to earliest if no slots exist at or after the target.
     """
     if not slots:
         return None
@@ -112,9 +113,12 @@ def pick_slot(slots: list[dict], target_time: str | None = None) -> dict | None:
     if target_mins is None:
         log.warning("Could not parse target time %r — using earliest slot", target_time)
         return slots[0]
-    best = min(slots, key=lambda s: abs((_time_to_mins(s["time"]) or 0) - target_mins))
-    log.info("Target time %s → closest available slot: %s", target_time, best["time"])
-    return best
+    eligible = [s for s in slots if (_time_to_mins(s["time"]) or 0) >= target_mins]
+    if eligible:
+        log.info("Target 'after %s' → earliest eligible slot: %s", target_time, eligible[0]["time"])
+        return eligible[0]
+    log.warning("No slots at or after %s — using earliest available: %s", target_time, slots[0]["time"])
+    return slots[0]
 
 
 # ---------------------------------------------------------------------------
