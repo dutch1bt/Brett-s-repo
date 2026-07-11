@@ -105,7 +105,7 @@ jobs:
 
           if [ "$OUTCOME" = "success" ]; then
             # Read booked time and players from result file
-            SUCCESS_MSG=$(python3 -c "import json; d=json.load(open('booking_result.json')); dt=d.get('date','TBD'); tm=d.get('time','TBD'); players=', '.join(d.get('players',[])); print(f'Birdie BOT: Tee time booked! {dt} at {tm} - Lakelands. Group: {players}')" 2>/dev/null || echo 'Birdie BOT: Tee time booked at Lakelands! Check GitHub Actions for details.')
+            SUCCESS_MSG=$(python3 -c "import json; d=json.load(open('booking_result.json')); dt=d.get('date','TBD'); tm=d.get('time','TBD'); players=', '.join(d.get('players',[])); print(f'Birdie BOT: Tee time booked! {dt} at {tm} - Lakelands. Group: {players}')" 2>/dev/null || echo 'Birdie BOT: Tee time booked at Lakelands! See bot logs for details.')
             # Text everyone in the group
             PHONES="${GROUP_PHONES:-$PHONE}"
             IFS=',' read -ra NUMS <<< "$PHONES"
@@ -115,6 +115,6 @@ jobs:
             done
           else
             # Only text Brett on failure
-            FAIL_MSG="Birdie BOT: Booking FAILED for $TARGET. Check GitHub Actions: github.com/${{ github.repository }}/actions"
+            FAIL_MSG="Birdie BOT: Booking FAILED for $TARGET. Check the Actions logs on the tee time bot."
             send_sms "$PHONE" "$FAIL_MSG"
           fi
