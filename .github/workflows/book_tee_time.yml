@@ -105,8 +105,19 @@ jobs:
           }
 
           if [ "$OUTCOME" = "success" ]; then
+            # Read booked time and players from result file
+            SUCCESS_MSG=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('booking_result.json'))
+    dt = d.get('date', 'TBD')
+    tm = d.get('time', 'TBD')
+    players = ', '.join(d.get('players', []))
+    print(f'Lakelands tee time booked! {dt} at {tm}. Group: {players}')
+except Exception as e:
+    print('Tee time booked at Lakelands! Check GitHub Actions for details.')
+")
             # Text everyone in the group
-            SUCCESS_MSG="Tee time booked! Sunday $TARGET at Lakelands. See you on the course!"
             PHONES="${GROUP_PHONES:-$PHONE}"
             IFS=',' read -ra NUMS <<< "$PHONES"
             for NUM in "${NUMS[@]}"; do

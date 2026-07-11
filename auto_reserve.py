@@ -177,6 +177,14 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
     if result.get("success"):
         log.info("SUCCESS — %s", result["message"])
         log.info("Confirmation number: %s", result["confirmation_number"])
+        # Write booking details for the SMS step to read
+        import json
+        with open("booking_result.json", "w") as f:
+            json.dump({
+                "date": date,
+                "time": slot["time"],
+                "players": PLAYER_NAMES,
+            }, f)
         return 0
     else:
         log.error("Reservation FAILED: %s", result.get("message", "unknown error"))
