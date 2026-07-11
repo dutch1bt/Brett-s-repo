@@ -1118,6 +1118,85 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
     except Exception as e:
         log.warning("Modal diagnostic failed: %s", e)
 
+    # --- Set P1 (Brett) transport to "Cart Lease" ---
+    # P1 name is auto-filled by the site; we need to fix the transport dropdown.
+    # The site defaults to "Daily Cart Rental" but Brett has a cart lease.
+    log.info("Setting P1 transport to 'Cart Lease'...")
+    p1_transport_set = False
+
+    # Strategy 1: Telerik $find — iterate items and select "Cart Lease" directly
+    for transport_combo_id in [
+        "ctl00_ctrl_MakeTeeTime_P1_PCombo_Transport",
+        "ctl00_ctrl_MakeTeeTime_P1_PCombo_CartType",
+        "ctl00_ctrl_MakeTeeTime_P1_PCombo_TransportType",
+    ]:
+        try:
+            tk_result = ctx.evaluate(f"""
+                () => {{
+                    if (typeof $find === 'undefined') return 'no $find';
+                    const combo = $find('{transport_combo_id}');
+                    if (!combo) return 'not found';
+                    const items = combo.get_items();
+                    for (let i = 0; i < items.get_count(); i++) {{
+                        const item = items.getItem(i);
+                        if ((item.get_text() || '').toLowerCase().includes('cart lease')) {{
+                            item.select();
+                            return 'selected: ' + item.get_text();
+                        }}
+                    }}
+                    const opts = Array.from({{length: items.get_count()}},
+                        (_, i) => items.getItem(i).get_text()).join(', ');
+                    combo.set_text('Cart Lease');
+                    return 'set_text fallback, options: ' + opts;
+                }}
+            """)
+            log.info("P1 transport Telerik (%s): %s", transport_combo_id, tk_result)
+            if tk_result and "selected:" in tk_result:
+                p1_transport_set = True
+                break
+            if tk_result and "set_text fallback" in tk_result:
+                page.wait_for_timeout(800)
+                for item_sel in ["li.rcbItem:has-text('Cart Lease')", "li:has-text('Cart Lease')"]:
+                    try:
+                        item = ctx.locator(item_sel).first
+                        if item.count():
+                            item.wait_for(state="visible", timeout=2000)
+                            item.click()
+                            log.info("P1 transport: clicked 'Cart Lease' after set_text")
+                            p1_transport_set = True
+                            break
+                    except Exception:
+                        continue
+            if p1_transport_set:
+                break
+        except Exception as ex:
+            log.debug("P1 transport Telerik %s failed: %s", transport_combo_id, ex)
+
+    # Strategy 2: positional — rcbInput idx 6 is P1 transport
+    if not p1_transport_set:
+        try:
+            all_rcb = ctx.locator(".rcbInput")
+            p1_trans_input = all_rcb.nth(6)
+            if p1_trans_input.count():
+                p1_trans_input.click(force=True)
+                page.wait_for_timeout(800)
+                for item_sel in ["li.rcbItem:has-text('Cart Lease')", "li:has-text('Cart Lease')"]:
+                    try:
+                        item = ctx.locator(item_sel).first
+                        if item.count():
+                            item.wait_for(state="visible", timeout=2000)
+                            item.click()
+                            log.info("P1 transport positional: clicked 'Cart Lease'")
+                            p1_transport_set = True
+                            break
+                    except Exception:
+                        continue
+        except Exception as ex:
+            log.warning("P1 transport positional fallback failed: %s", ex)
+
+    if not p1_transport_set:
+        log.warning("Could not set P1 transport to 'Cart Lease' — proceeding with site default")
+
     # --- Player selection (P2, P3, P4) ---
     # All interactions use ctx (the Axis dialog iframe), not page.
     for idx, name in enumerate(player_names[1:], start=1):
