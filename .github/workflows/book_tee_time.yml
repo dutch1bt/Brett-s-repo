@@ -15,10 +15,9 @@ on:
         required: false
         default: ''
       dry_run:
-        description: 'Dry run — check availability but do not submit booking'
+        description: 'Dry run — set to true to check availability without booking'
         required: false
-        default: false
-        type: boolean
+        default: 'false'
 
 jobs:
   book:
