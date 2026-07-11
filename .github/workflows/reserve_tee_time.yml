@@ -105,7 +105,7 @@ jobs:
 
           if [ "$OUTCOME" = "success" ]; then
             # Read booked time and players from result file
-            SUCCESS_MSG=$(python3 -c "import json; d=json.load(open('booking_result.json')); dt=d.get('date','TBD'); tm=d.get('time','TBD'); players=', '.join(d.get('players',[])); print(f\"Sandbagger Tee Hawk 🤖 🦅: You Sandbaggin' sons of bitches just got a tee time sniped at Lakelands DeVries Signature Track - {dt} at {tm} - {players}\n\nRob giving out some strokes out, unlucky...\")" 2>/dev/null || printf "Sandbagger Tee Hawk 🤖 🦅: You Sandbaggin' sons of bitches just got a tee time sniped at Lakelands DeVries Signature Track\n\nRob giving out some strokes out, unlucky...")
+            SUCCESS_MSG=$(python3 -c "import json; d=json.load(open('booking_result.json')); dt=d.get('date','TBD'); tm=d.get('time','TBD'); players=', '.join(d.get('players',[])); print(f\"Sandbagger Tee Hawk 🤖 🦅: You Sandbaggin' sons of bitches just got a tee time sniped at Lakelands DeVries Signature Track - {dt} at {tm} (Conf: {d.get('confirmation','N/A')}) - {players}\n\nRob giving out some strokes out, unlucky...\")" 2>/dev/null || printf "Sandbagger Tee Hawk 🤖 🦅: You Sandbaggin' sons of bitches just got a tee time sniped at Lakelands DeVries Signature Track\n\nRob giving out some strokes out, unlucky...")
             # Text everyone in the group
             PHONES="${GROUP_PHONES:-$PHONE}"
             IFS=',' read -ra NUMS <<< "$PHONES"

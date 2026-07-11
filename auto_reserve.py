@@ -183,6 +183,7 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
             json.dump({
                 "date": date,
                 "time": slot["time"],
+                "confirmation": result["confirmation_number"],
                 "players": PLAYER_NAMES,
             }, f)
         return 0
