@@ -125,12 +125,7 @@ except Exception as e:
               [ -n "$NUM" ] && send_sms "$NUM" "$SUCCESS_MSG"
             done
           else
-            # Text everyone on failure so the group knows to book manually
+            # Only text Brett on failure
             FAIL_MSG="Birdie BOT: Booking FAILED for $TARGET. Check GitHub Actions: github.com/${{ github.repository }}/actions"
-            PHONES="${GROUP_PHONES:-$PHONE}"
-            IFS=',' read -ra NUMS <<< "$PHONES"
-            for NUM in "${NUMS[@]}"; do
-              NUM=$(echo "$NUM" | tr -d ' ')
-              [ -n "$NUM" ] && send_sms "$NUM" "$FAIL_MSG"
-            done
+            send_sms "$PHONE" "$FAIL_MSG"
           fi
