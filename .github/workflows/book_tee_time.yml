@@ -73,13 +73,17 @@ jobs:
         if: always()
         env:
           PHONE: ${{ secrets.PHONE_NUMBER }}
+          GROUP_PHONES: ${{ secrets.GROUP_PHONE_NUMBERS }}
+          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
         run: |
           if [ -z "$PHONE" ]; then
             echo "PHONE_NUMBER secret not set — skipping SMS"
             exit 0
           fi
 
-          # Compute target date (same logic as auto_reserve.py)
+          KEY="${TEXTBELT_KEY:-textbelt}"
+
+          # Compute target date
           TARGET=$(python3 -c "
           from datetime import date, timedelta
           override = '${{ github.event.inputs.date }}'
@@ -90,13 +94,27 @@ jobs:
           ")
 
           OUTCOME="${{ steps.book.outcome }}"
-          if [ "$OUTCOME" = "success" ]; then
-            MSG="Golf booked! 7:30 AM on $TARGET at Lakelands. Check GitHub Actions for full details."
-          else
-            MSG="Golf booking FAILED for $TARGET. Check GitHub Actions for details: github.com/${{ github.repository }}/actions"
-          fi
 
-          curl -s -X POST https://textbelt.com/text \
-            --data-urlencode "phone=$PHONE" \
-            --data-urlencode "message=$MSG" \
-            -d "key=textbelt" || echo "SMS send failed (curl error)"
+          send_sms() {
+            local NUMBER="$1"
+            local MSG="$2"
+            curl -s -X POST https://textbelt.com/text \
+              --data-urlencode "phone=$NUMBER" \
+              --data-urlencode "message=$MSG" \
+              -d "key=$KEY" || echo "SMS to $NUMBER failed"
+          }
+
+          if [ "$OUTCOME" = "success" ]; then
+            # Text everyone in the group
+            SUCCESS_MSG="Tee time booked! Sunday $TARGET at Lakelands. See you on the course!"
+            PHONES="${GROUP_PHONES:-$PHONE}"
+            IFS=',' read -ra NUMS <<< "$PHONES"
+            for NUM in "${NUMS[@]}"; do
+              NUM=$(echo "$NUM" | tr -d ' ')
+              [ -n "$NUM" ] && send_sms "$NUM" "$SUCCESS_MSG"
+            done
+          else
+            # Only text Brett on failure
+            FAIL_MSG="Golf booking FAILED for $TARGET. Check GitHub Actions: github.com/${{ github.repository }}/actions"
+            send_sms "$PHONE" "$FAIL_MSG"
+          fi
