@@ -2,8 +2,9 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # 7:30 AM EDT (UTC-4) on Sundays = 11:30 AM UTC
-    - cron: '30 11 * * 0'
+    # Fire at 7:00 AM EDT (11:00 UTC) — runner warms up early, then sleeps
+    # until exactly 7:30 AM EDT before booking (see "Wait" step below).
+    - cron: '0 11 * * 0'
   workflow_dispatch:
     inputs:
       date:
@@ -37,6 +38,21 @@ jobs:
 
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
+
+      - name: Wait until 7:30 AM EDT
+        if: github.event_name == 'schedule'
+        run: |
+          # Sleep until exactly 11:30 UTC (7:30 AM EDT).
+          # If the runner started late and it's already past 11:30, skip immediately.
+          TARGET=$(date -u -d "today 11:30:00" +%s)
+          NOW=$(date -u +%s)
+          DIFF=$((TARGET - NOW))
+          if [ $DIFF -gt 0 ]; then
+            echo "Waiting ${DIFF}s until 7:30 AM EDT..."
+            sleep $DIFF
+          else
+            echo "Already past 7:30 AM EDT (diff=${DIFF}s) — booking immediately."
+          fi
 
       - name: Book tee time
         id: book
