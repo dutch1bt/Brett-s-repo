@@ -2,8 +2,9 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 7:00 AM EDT (11:00 UTC) — runner warms up early, then sleeps
-    # until exactly 7:30 AM EDT before booking (see "Wait" step below).
+    # Fire at 11:00 UTC (7:00 AM EDT summer / 6:00 AM EST winter).
+    # The "Wait" step below sleeps until exactly 7:30 AM America/Toronto,
+    # handling the EDT/EST switch automatically.
     - cron: '0 11 * * 0'
   workflow_dispatch:
     inputs:
@@ -39,19 +40,24 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 7:30 AM EDT
+      - name: Wait until 7:30 AM Eastern
         if: github.event_name == 'schedule'
         run: |
-          # Sleep until exactly 11:30 UTC (7:30 AM EDT).
-          # If the runner started late and it's already past 11:30, skip immediately.
-          TARGET=$(date -u -d "today 11:30:00" +%s)
+          # Compute 7:30 AM America/Toronto (handles EDT and EST automatically).
+          TARGET=$(python3 -c "
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          tz = ZoneInfo('America/Toronto')
+          t = datetime.now(tz).replace(hour=7, minute=30, second=0, microsecond=0)
+          print(int(t.timestamp()))
+          ")
           NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 7:30 AM EDT..."
+            echo "Waiting ${DIFF}s until 7:30 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 7:30 AM EDT (diff=${DIFF}s) — booking immediately."
+            echo "Already past 7:30 AM Eastern (diff=${DIFF}s) — booking immediately."
           fi
 
       - name: Book tee time
