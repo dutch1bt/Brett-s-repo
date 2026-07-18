@@ -48,16 +48,16 @@ jobs:
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=7, minute=30, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=7, minute=29, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 7:30 AM Eastern..."
+            echo "Waiting ${DIFF}s until 7:29 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 7:30 AM Eastern (diff=${DIFF}s) — booking immediately."
+            echo "Already past 7:29 AM Eastern (diff=${DIFF}s) — booking immediately."
           fi
 
       - name: Book tee time

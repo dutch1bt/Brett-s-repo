@@ -150,8 +150,19 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
 
     log.info("Target Sunday: %s", date)
 
-    # 2. Fetch available slots
-    slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
+    # 2. Fetch available slots — retry for up to 90 s so we catch the exact
+    #    moment the booking window opens (script starts at 7:29, window at 7:30).
+    slots = []
+    for attempt in range(7):
+        slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
+        if slots:
+            log.info("Slots found on attempt %d.", attempt + 1)
+            break
+        if attempt < 6:
+            log.info("No slots yet (attempt %d/7) — retrying in 15 s...", attempt + 1)
+            import time as _time
+            _time.sleep(15)
+
     if not slots:
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
