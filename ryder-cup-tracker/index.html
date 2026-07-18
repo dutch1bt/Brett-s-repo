@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sandbaggers Ryder Cup Tracker</title>
+<style>
+  :root {
+    --black-team: #1c1c1e;
+    --black-team-light: #3a3a3d;
+    --blue-team: #0b5fff;
+    --blue-team-light: #4a8bff;
+    --gold: #d4af37;
+    --red: #b0212f;
+    --bg: #0e1420;
+    --card: #161e2e;
+    --card-2: #1c2740;
+    --text: #eef1f6;
+    --muted: #9aa5b8;
+    --border: #2a3550;
+    --good: #2e9e5b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  body { padding-bottom: 60px; }
+  header.top {
+    background: linear-gradient(135deg, var(--black-team) 0%, var(--red) 55%, var(--blue-team) 100%);
+    padding: 22px 16px 18px;
+    text-align: center;
+    position: relative;
+  }
+  header.top h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    letter-spacing: 0.5px;
+  }
+  header.top .sub {
+    margin-top: 4px;
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.85);
+  }
+  .gear-btn {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: #fff;
+    border-radius: 50%;
+    width: 36px;
+    height: 36px;
+    font-size: 1.1rem;
+    cursor: pointer;
+  }
+  .status-pill {
+    position: absolute;
+    top: 16px;
+    left: 14px;
+    font-size: 0.7rem;
+    padding: 4px 8px;
+    border-radius: 20px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.3);
+  }
+  .status-pill.live { background: rgba(46,158,91,0.35); }
+  .status-pill.offline { background: rgba(176,33,47,0.45); }
+
+  .container { max-width: 760px; margin: 0 auto; padding: 16px; }
+
+  .scoreboard {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .score-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .team-block { flex: 1; text-align: center; }
+  .team-block .name {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+  }
+  .team-block.black .name { color: #c9c9cc; }
+  .team-block.blue .name { color: #9cc0ff; }
+  .team-block .pts {
+    font-size: 2.6rem;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .vs { color: var(--muted); font-weight: 600; padding: 0 4px; }
+
+  .bar-wrap {
+    margin-top: 14px;
+    height: 22px;
+    border-radius: 11px;
+    overflow: hidden;
+    background: var(--card-2);
+    position: relative;
+    border: 1px solid var(--border);
+  }
+  .bar-black, .bar-blue {
+    height: 100%;
+    float: left;
+    transition: width 0.3s ease;
+  }
+  .bar-black { background: linear-gradient(90deg, #000 0%, var(--black-team-light) 100%); }
+  .bar-blue { background: linear-gradient(90deg, var(--blue-team) 0%, var(--blue-team-light) 100%); }
+  .bar-mid-line {
+    position: absolute;
+    top: -3px; bottom: -3px;
+    left: calc(13.5 / 26 * 100%);
+    width: 2px;
+    background: var(--gold);
+  }
+  .clinch-note {
+    text-align: center;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .winner-banner {
+    margin-top: 10px;
+    text-align: center;
+    background: linear-gradient(90deg, var(--gold), #fff3c4, var(--gold));
+    color: #2b1e00;
+    font-weight: 700;
+    padding: 8px;
+    border-radius: 10px;
+    display: none;
+  }
+
+  nav.tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+    overflow-x: auto;
+  }
+  nav.tabs button {
+    flex: 1;
+    white-space: nowrap;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 10px 8px;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  nav.tabs button.active {
+    background: var(--card-2);
+    color: var(--text);
+    border-color: var(--gold);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .section-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .section-card h2 {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+  }
+  .section-card .section-note {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  .section-points-tally {
+    font-size: 0.78rem;
+    color: var(--gold);
+    margin-bottom: 10px;
+  }
+
+  .match-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .match-row:first-of-type { border-top: none; }
+  .match-row input[type=text] {
+    flex: 1;
+    min-width: 140px;
+    background: var(--card-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .match-row select {
+    background: var(--card-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .pts-badge {
+    font-size: 0.75rem;
+    color: var(--muted);
+    min-width: 70px;
+    text-align: right;
+  }
+  .pts-badge b.black { color: #c9c9cc; }
+  .pts-badge b.blue { color: #9cc0ff; }
+
+  .roster-cols {
+    display: flex;
+    gap: 12px;
+  }
+  .roster-col { flex: 1; }
+  .roster-col h3 {
+    font-size: 0.9rem;
+    margin: 0 0 8px;
+  }
+  .roster-col.black h3 { color: #c9c9cc; }
+  .roster-col.blue h3 { color: #9cc0ff; }
+  .roster-item {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .roster-item input {
+    flex: 1;
+    background: var(--card-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 9px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .roster-item button, .add-row-btn, .reset-btn {
+    background: var(--card-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 8px;
+    cursor: pointer;
+    padding: 6px 10px;
+    font-size: 0.85rem;
+  }
+  .add-row-btn { margin-top: 4px; width: 100%; }
+  .reset-btn { color: #ff8080; border-color: #5a2a2a; }
+
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 50;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    max-width: 480px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .modal h2 { margin-top: 0; font-size: 1.1rem; }
+  .modal label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin: 10px 0 4px;
+  }
+  .modal input, .modal textarea {
+    width: 100%;
+    background: var(--card-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+  .modal textarea { min-height: 90px; }
+  .modal .modal-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .modal .modal-actions button {
+    flex: 1;
+    padding: 10px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .btn-primary { background: var(--gold); color: #2b1e00; font-weight: 700; }
+  .btn-secondary { background: var(--card-2); color: var(--muted); border: 1px solid var(--border) !important; }
+  .modal .help-text {
+    font-size: 0.75rem;
+    color: var(--muted);
+    line-height: 1.4;
+    margin-top: 10px;
+  }
+  .modal .help-text a { color: #9cc0ff; }
+  .error-text { color: #ff8080; font-size: 0.78rem; margin-top: 8px; }
+
+  footer.credit {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.72rem;
+    margin-top: 20px;
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="status-pill offline" id="statusPill">Offline</div>
+  <button class="gear-btn" id="openSettingsBtn" title="Settings">⚙️</button>
+  <h1>🏆 13th Annual Sandbaggers Ryder Cup</h1>
+  <div class="sub">Team Black vs Team Blue &mdash; Treetops, Aug 6&ndash;9, 2026</div>
+</header>
+
+<div class="container">
+
+  <div class="scoreboard">
+    <div class="score-row">
+      <div class="team-block black">
+        <div class="name">Team Black</div>
+        <div class="pts" id="blackTotal">0</div>
+      </div>
+      <div class="vs">&mdash;</div>
+      <div class="team-block blue">
+        <div class="name">Team Blue</div>
+        <div class="pts" id="blueTotal">0</div>
+      </div>
+    </div>
+    <div class="bar-wrap">
+      <div class="bar-black" id="barBlack" style="width:50%"></div>
+      <div class="bar-blue" id="barBlue" style="width:50%"></div>
+      <div class="bar-mid-line" title="13.5 to win"></div>
+    </div>
+    <div class="clinch-note" id="clinchNote">26 points available &middot; 13.5 to win the Cup</div>
+    <div class="winner-banner" id="winnerBanner"></div>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="matches">Matches</button>
+    <button class="tab-btn" data-tab="roster">Rosters</button>
+    <button class="tab-btn" data-tab="format">Format</button>
+  </nav>
+
+  <div class="tab-panel active" id="tab-matches">
+
+    <div class="section-card">
+      <h2>Thursday &mdash; Top Two Match</h2>
+      <div class="section-note">Top two handicaps from each team, best ball match play. Worth 2 points.</div>
+      <div id="topTwoRow"></div>
+    </div>
+
+    <div class="section-card">
+      <h2>Thursday &mdash; Pink Ball Stroke Play</h2>
+      <div class="section-note">4 flights (2 per team). Placement points: 1st = 3, 2nd = 1, 3rd/4th = 0.</div>
+      <div id="pinkBallRows"></div>
+    </div>
+
+    <div class="section-card">
+      <h2>Friday AM &mdash; Best Ball</h2>
+      <div class="section-note">5 matches, 1 point each.</div>
+      <div id="bestBallRows"></div>
+    </div>
+
+    <div class="section-card">
+      <h2>Friday PM &mdash; Scramble</h2>
+      <div class="section-note">5 matches, 1 point each.</div>
+      <div id="scrambleRows"></div>
+    </div>
+
+    <div class="section-card">
+      <h2>Saturday AM &mdash; Singles Match Play</h2>
+      <div class="section-note">10 matches, 1 point each. Sinacola vs. Beeler (captains) is the tiebreaker match and tees off last.</div>
+      <div id="singlesRows"></div>
+    </div>
+
+  </div>
+
+  <div class="tab-panel" id="tab-roster">
+    <div class="section-card">
+      <h2>Rosters</h2>
+      <div class="section-note">Add each team's players here just for reference &mdash; not linked to match scoring.</div>
+      <div class="roster-cols">
+        <div class="roster-col black">
+          <h3>Team Black</h3>
+          <div id="rosterBlack"></div>
+          <button class="add-row-btn" id="addBlackPlayer">+ Add Player</button>
+        </div>
+        <div class="roster-col blue">
+          <h3>Team Blue</h3>
+          <div id="rosterBlue"></div>
+          <button class="add-row-btn" id="addBluePlayer">+ Add Player</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="tab-format">
+    <div class="section-card">
+      <h2>Format Recap</h2>
+      <div class="section-note" style="color:var(--text); line-height:1.6;">
+        <p><b>Thursday</b> &mdash; The Dream, West Branch. Top Two Match (2 pts) + Pink Ball Stroke Play, 4 flights (3/1/0/0 pts). Real pink balls must be returned or 5 strokes get added to the offending player's score.</p>
+        <p><b>Friday AM</b> &mdash; Traditional Best Ball, 1 point per match, 5 points available.</p>
+        <p><b>Friday PM</b> &mdash; Two-man scramble match play, 1 point per match, 5 points available.</p>
+        <p><b>Saturday AM</b> &mdash; Individual match play, 1 point per match, 10 points available. Sinacola vs. Beeler is the tiebreaker and tees off last.</p>
+        <p><b>Total:</b> 26 points &middot; 13.5 wins the Cup.</p>
+      </div>
+      <button class="reset-btn" id="resetBtn">Reset all scores to defaults</button>
+    </div>
+  </div>
+
+</div>
+
+<footer class="credit">Shared live via Firebase &middot; edits sync to everyone with this link</footer>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h2>Settings</h2>
+
+    <label>Event / Room ID</label>
+    <input type="text" id="eventIdInput" placeholder="sandbaggers-ryder-cup-2026" />
+
+    <label>Your name (optional, shown as last editor)</label>
+    <input type="text" id="displayNameInput" placeholder="Dutch" />
+
+    <label>Firebase config (paste the JSON object from your Firebase console)</label>
+    <textarea id="firebaseConfigInput" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'></textarea>
+
+    <div class="error-text" id="settingsError"></div>
+
+    <div class="help-text">
+      Need a Firebase project? Go to <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">console.firebase.google.com</a> &rarr; create a project &rarr; Build &rarr; Firestore Database &rarr; Create database (test mode is fine) &rarr; Project settings &rarr; add a Web App &rarr; copy the <code>firebaseConfig</code> object here. See the README next to this file for full step-by-step instructions and recommended security rules.
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" id="settingsCancelBtn">Cancel</button>
+      <button class="btn-primary" id="settingsSaveBtn">Save &amp; Connect</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var LS_CONFIG = "ryderCup.firebaseConfig";
+  var LS_EVENT_ID = "ryderCup.eventId";
+  var LS_DISPLAY_NAME = "ryderCup.displayName";
+  var DEFAULT_EVENT_ID = "sandbaggers-ryder-cup-2026";
+
+  var db = null;
+  var docRef = null;
+  var state = null;
+  var suppressRender = false;
+  var pendingRemoteData = null;
+  var writeTimer = null;
+
+  function uid() {
+    return Math.random().toString(36).slice(2, 10);
+  }
+
+  function defaultMatchList(count, prefix) {
+    var arr = [];
+    for (var i = 1; i <= count; i++) {
+      arr.push({ id: uid(), label: prefix + " " + i, result: "" });
+    }
+    return arr;
+  }
+
+  function defaultState() {
+    var singles = defaultMatchList(10, "Match");
+    singles[singles.length - 1].label = "Match 10 (Captains' Match — tiebreaker)";
+    return {
+      teams: { black: { players: [] }, blue: { players: [] } },
+      topTwo: { label: "Top Two Match", result: "" },
+      pinkBall: [
+        { id: uid(), team: "black", label: "Black Flight 1", placement: "" },
+        { id: uid(), team: "black", label: "Black Flight 2", placement: "" },
+        { id: uid(), team: "blue", label: "Blue Flight 1", placement: "" },
+        { id: uid(), team: "blue", label: "Blue Flight 2", placement: "" }
+      ],
+      bestBall: defaultMatchList(5, "Match"),
+      scramble: defaultMatchList(5, "Match"),
+      singles: singles,
+      updatedAt: null,
+      updatedBy: null
+    };
+  }
+
+  // ---------- Settings / connection ----------
+
+  function loadConfig() {
+    try {
+      var raw = localStorage.getItem(LS_CONFIG);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function getEventId() {
+    return localStorage.getItem(LS_EVENT_ID) || DEFAULT_EVENT_ID;
+  }
+
+  function getDisplayName() {
+    return localStorage.getItem(LS_DISPLAY_NAME) || "";
+  }
+
+  function setStatus(mode) {
+    var pill = document.getElementById("statusPill");
+    pill.classList.remove("live", "offline");
+    if (mode === "live") {
+      pill.textContent = "Live";
+      pill.classList.add("live");
+    } else if (mode === "connecting") {
+      pill.textContent = "Connecting…";
+    } else {
+      pill.textContent = "Offline";
+      pill.classList.add("offline");
+    }
+  }
+
+  function connect() {
+    var cfg = loadConfig();
+    if (!cfg) {
+      setStatus("offline");
+      openSettings();
+      return;
+    }
+    setStatus("connecting");
+    try {
+      if (!firebase.apps.length) {
+        firebase.initializeApp(cfg);
+      }
+      db = firebase.firestore();
+      docRef = db.collection("ryderCupEvents").doc(getEventId());
+      docRef.onSnapshot(function (snap) {
+        setStatus("live");
+        if (!snap.exists) {
+          state = defaultState();
+          writeState(true);
+        } else {
+          var data = snap.data();
+          if (suppressRender) {
+            pendingRemoteData = data;
+          } else {
+            state = data;
+            renderAll();
+          }
+        }
+      }, function (err) {
+        console.error(err);
+        setStatus("offline");
+        openSettings();
+        document.getElementById("settingsError").textContent =
+          "Connection error: " + err.message;
+      });
+    } catch (e) {
+      console.error(e);
+      setStatus("offline");
+      openSettings();
+      document.getElementById("settingsError").textContent =
+        "Could not connect: " + e.message;
+    }
+  }
+
+  function writeState(immediate) {
+    if (!docRef) return;
+    state.updatedAt = new Date().toISOString();
+    state.updatedBy = getDisplayName() || null;
+    var payload = state;
+    if (immediate) {
+      docRef.set(payload);
+      return;
+    }
+    clearTimeout(writeTimer);
+    writeTimer = setTimeout(function () {
+      docRef.set(payload);
+    }, 350);
+  }
+
+  // ---------- Rendering ----------
+
+  function pointsForResult(result, full) {
+    if (result === "black") return { black: full, blue: 0 };
+    if (result === "blue") return { black: 0, blue: full };
+    if (result === "halved") return { black: full / 2, blue: full / 2 };
+    return { black: 0, blue: 0 };
+  }
+
+  function pinkBallPoints(placement) {
+    if (placement === "1") return 3;
+    if (placement === "2") return 1;
+    return 0;
+  }
+
+  function computeTotals() {
+    var black = 0, blue = 0;
+
+    var tt = pointsForResult(state.topTwo.result, 2);
+    black += tt.black; blue += tt.blue;
+
+    state.pinkBall.forEach(function (f) {
+      var pts = pinkBallPoints(f.placement);
+      if (f.team === "black") black += pts; else if (f.team === "blue") blue += pts;
+    });
+
+    state.bestBall.forEach(function (m) {
+      var p = pointsForResult(m.result, 1);
+      black += p.black; blue += p.blue;
+    });
+
+    state.scramble.forEach(function (m) {
+      var p = pointsForResult(m.result, 1);
+      black += p.black; blue += p.blue;
+    });
+
+    state.singles.forEach(function (m) {
+      var p = pointsForResult(m.result, 1);
+      black += p.black; blue += p.blue;
+    });
+
+    return { black: black, blue: blue };
+  }
+
+  function fmt(n) {
+    return (Math.round(n * 2) / 2).toString();
+  }
+
+  function renderScoreboard() {
+    var totals = computeTotals();
+    document.getElementById("blackTotal").textContent = fmt(totals.black);
+    document.getElementById("blueTotal").textContent = fmt(totals.blue);
+    var total = 26;
+    var blackPct = (totals.black / total) * 100;
+    var bluePct = (totals.blue / total) * 100;
+    document.getElementById("barBlack").style.width = blackPct + "%";
+    document.getElementById("barBlue").style.width = bluePct + "%";
+
+    var banner = document.getElementById("winnerBanner");
+    var note = document.getElementById("clinchNote");
+    if (totals.black >= 13.5) {
+      banner.style.display = "block";
+      banner.textContent = "🏆 Team Black wins the Ryder Cup!";
+      note.textContent = "26 points available · 13.5 to win the Cup";
+    } else if (totals.blue >= 13.5) {
+      banner.style.display = "block";
+      banner.textContent = "🏆 Team Blue wins the Ryder Cup!";
+      note.textContent = "26 points available · 13.5 to win the Cup";
+    } else {
+      banner.style.display = "none";
+      var remainingBlack = (13.5 - totals.black).toFixed(1);
+      var remainingBlue = (13.5 - totals.blue).toFixed(1);
+      note.textContent = "Black needs " + remainingBlack + " · Blue needs " + remainingBlue + " to win (13.5 of 26)";
+    }
+  }
+
+  function makeResultSelect(current, onChange) {
+    var sel = document.createElement("select");
+    var opts = [
+      { v: "", t: "Not played" },
+      { v: "black", t: "Team Black wins" },
+      { v: "blue", t: "Team Blue wins" },
+      { v: "halved", t: "Halved" }
+    ];
+    opts.forEach(function (o) {
+      var el = document.createElement("option");
+      el.value = o.v; el.textContent = o.t;
+      if (o.v === current) el.selected = true;
+      sel.appendChild(el);
+    });
+    sel.addEventListener("change", function () { onChange(sel.value); });
+    trackFocus(sel);
+    return sel;
+  }
+
+  function trackFocus(el) {
+    el.addEventListener("focus", function () { suppressRender = true; });
+    el.addEventListener("blur", function () {
+      suppressRender = false;
+      if (pendingRemoteData) {
+        state = pendingRemoteData;
+        pendingRemoteData = null;
+        renderAll();
+      }
+    });
+  }
+
+  function makeLabelInput(value, onChange) {
+    var inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = value;
+    inp.addEventListener("input", function () { onChange(inp.value); });
+    trackFocus(inp);
+    return inp;
+  }
+
+  function pointsBadge(result, full) {
+    var p = pointsForResult(result, full);
+    var span = document.createElement("span");
+    span.className = "pts-badge";
+    span.innerHTML = '<b class="black">' + fmt(p.black) + '</b> / <b class="blue">' + fmt(p.blue) + "</b>";
+    return span;
+  }
+
+  function renderTopTwo() {
+    var wrap = document.getElementById("topTwoRow");
+    wrap.innerHTML = "";
+    var row = document.createElement("div");
+    row.className = "match-row";
+    row.appendChild(makeLabelInput(state.topTwo.label, function (v) {
+      state.topTwo.label = v; writeState();
+    }));
+    row.appendChild(makeResultSelect(state.topTwo.result, function (v) {
+      state.topTwo.result = v; writeState(); renderScoreboard(); renderTopTwo();
+    }));
+    row.appendChild(pointsBadge(state.topTwo.result, 2));
+    wrap.appendChild(row);
+  }
+
+  function renderPinkBall() {
+    var wrap = document.getElementById("pinkBallRows");
+    wrap.innerHTML = "";
+    state.pinkBall.forEach(function (f) {
+      var row = document.createElement("div");
+      row.className = "match-row";
+
+      var teamSel = document.createElement("select");
+      ["black", "blue"].forEach(function (t) {
+        var o = document.createElement("option");
+        o.value = t; o.textContent = t === "black" ? "Team Black" : "Team Blue";
+        if (f.team === t) o.selected = true;
+        teamSel.appendChild(o);
+      });
+      teamSel.addEventListener("change", function () {
+        f.team = teamSel.value; writeState(); renderScoreboard();
+      });
+      trackFocus(teamSel);
+      row.appendChild(teamSel);
+
+      row.appendChild(makeLabelInput(f.label, function (v) {
+        f.label = v; writeState();
+      }));
+
+      var placeSel = document.createElement("select");
+      [["", "Placement"], ["1", "1st (3 pts)"], ["2", "2nd (1 pt)"], ["3", "3rd (0 pts)"], ["4", "4th (0 pts)"]].forEach(function (o) {
+        var el = document.createElement("option");
+        el.value = o[0]; el.textContent = o[1];
+        if (f.placement === o[0]) el.selected = true;
+        placeSel.appendChild(el);
+      });
+      placeSel.addEventListener("change", function () {
+        f.placement = placeSel.value; writeState(); renderScoreboard(); renderPinkBall();
+      });
+      trackFocus(placeSel);
+      row.appendChild(placeSel);
+
+      var pts = pinkBallPoints(f.placement);
+      var badge = document.createElement("span");
+      badge.className = "pts-badge";
+      badge.innerHTML = '<b class="' + f.team + '">+' + pts + "</b>";
+      row.appendChild(badge);
+
+      wrap.appendChild(row);
+    });
+  }
+
+  function renderMatchGroup(containerId, list, full) {
+    var wrap = document.getElementById(containerId);
+    wrap.innerHTML = "";
+    list.forEach(function (m) {
+      var row = document.createElement("div");
+      row.className = "match-row";
+      row.appendChild(makeLabelInput(m.label, function (v) {
+        m.label = v; writeState();
+      }));
+      row.appendChild(makeResultSelect(m.result, function (v) {
+        m.result = v; writeState(); renderScoreboard(); renderMatchGroup(containerId, list, full);
+      }));
+      row.appendChild(pointsBadge(m.result, full));
+      wrap.appendChild(row);
+    });
+  }
+
+  function renderRoster() {
+    ["black", "blue"].forEach(function (team) {
+      var wrap = document.getElementById(team === "black" ? "rosterBlack" : "rosterBlue");
+      wrap.innerHTML = "";
+      state.teams[team].players.forEach(function (p, idx) {
+        var row = document.createElement("div");
+        row.className = "roster-item";
+        var inp = document.createElement("input");
+        inp.type = "text";
+        inp.value = p;
+        inp.addEventListener("input", function () {
+          state.teams[team].players[idx] = inp.value; writeState();
+        });
+        trackFocus(inp);
+        row.appendChild(inp);
+
+        var del = document.createElement("button");
+        del.textContent = "✕";
+        del.addEventListener("click", function () {
+          state.teams[team].players.splice(idx, 1);
+          writeState(true); renderRoster();
+        });
+        row.appendChild(del);
+
+        wrap.appendChild(row);
+      });
+    });
+  }
+
+  function renderAll() {
+    renderScoreboard();
+    renderTopTwo();
+    renderPinkBall();
+    renderMatchGroup("bestBallRows", state.bestBall, 1);
+    renderMatchGroup("scrambleRows", state.scramble, 1);
+    renderMatchGroup("singlesRows", state.singles, 1);
+    renderRoster();
+  }
+
+  // ---------- Tabs ----------
+
+  document.querySelectorAll(".tab-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".tab-btn").forEach(function (b) { b.classList.remove("active"); });
+      document.querySelectorAll(".tab-panel").forEach(function (p) { p.classList.remove("active"); });
+      btn.classList.add("active");
+      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ---------- Roster add buttons ----------
+
+  document.getElementById("addBlackPlayer").addEventListener("click", function () {
+    state.teams.black.players.push("");
+    writeState(true); renderRoster();
+  });
+  document.getElementById("addBluePlayer").addEventListener("click", function () {
+    state.teams.blue.players.push("");
+    writeState(true); renderRoster();
+  });
+
+  // ---------- Reset ----------
+
+  document.getElementById("resetBtn").addEventListener("click", function () {
+    if (!confirm("Reset all match results to defaults? Rosters will be kept.")) return;
+    var rosters = state.teams;
+    state = defaultState();
+    state.teams = rosters;
+    writeState(true);
+    renderAll();
+  });
+
+  // ---------- Settings modal ----------
+
+  function openSettings() {
+    document.getElementById("eventIdInput").value = getEventId();
+    document.getElementById("displayNameInput").value = getDisplayName();
+    var cfg = loadConfig();
+    document.getElementById("firebaseConfigInput").value = cfg ? JSON.stringify(cfg, null, 2) : "";
+    document.getElementById("settingsError").textContent = "";
+    document.getElementById("settingsModal").classList.add("open");
+  }
+
+  function closeSettings() {
+    document.getElementById("settingsModal").classList.remove("open");
+  }
+
+  document.getElementById("openSettingsBtn").addEventListener("click", openSettings);
+  document.getElementById("settingsCancelBtn").addEventListener("click", closeSettings);
+
+  document.getElementById("settingsSaveBtn").addEventListener("click", function () {
+    var errEl = document.getElementById("settingsError");
+    var raw = document.getElementById("firebaseConfigInput").value.trim();
+    var cfg;
+    try {
+      cfg = JSON.parse(raw);
+      if (!cfg.apiKey || !cfg.projectId) throw new Error("Missing apiKey/projectId");
+    } catch (e) {
+      errEl.textContent = "That doesn't look like a valid Firebase config JSON. " + e.message;
+      return;
+    }
+    localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
+    localStorage.setItem(LS_EVENT_ID, document.getElementById("eventIdInput").value.trim() || DEFAULT_EVENT_ID);
+    localStorage.setItem(LS_DISPLAY_NAME, document.getElementById("displayNameInput").value.trim());
+    closeSettings();
+    location.reload();
+  });
+
+  // ---------- Init ----------
+
+  connect();
+})();
+</script>
+</body>
+</html>
