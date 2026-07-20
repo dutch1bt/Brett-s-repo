@@ -2,10 +2,11 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 11:00 UTC (7:00 AM EDT summer / 6:00 AM EST winter).
-    # The "Wait" step below sleeps until exactly 7:30 AM America/Toronto,
+    # Fire at 10:00 UTC (6:00 AM EDT summer / 5:00 AM EST winter).
+    # GitHub cron runs ~45-50 min late on Sundays, so we start an hour early.
+    # The "Wait" step below sleeps until exactly 7:29 AM America/Toronto,
     # handling the EDT/EST switch automatically.
-    - cron: '0 11 * * 0'
+    - cron: '0 10 * * 0'
   workflow_dispatch:
     inputs:
       date:
