@@ -1,0 +1,140 @@
+name: Reserve Fort Myers Tee Time
+
+on:
+  schedule:
+    # Fire at 02:00 UTC Tuesday (10:00 PM EDT Monday / 9:00 PM EST Monday).
+    # GitHub cron runs ~45-50 min late, so we start ~1 hour early.
+    # The "Wait" step below sleeps until exactly midnight America/New_York,
+    # when the Fort Myers booking window opens (7 days out).
+    - cron: '0 2 * * 2'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to book (YYYY-MM-DD). Leave empty to auto-compute 7 days out.'
+        required: false
+        default: ''
+      time_preference:
+        description: 'Preferred tee time e.g. "10:30 AM". Leave empty for configured default.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — set to true to check availability without booking'
+        required: false
+        default: 'false'
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait until midnight Eastern
+        if: github.event_name == 'schedule'
+        run: |
+          # Sleep until midnight America/New_York (handles EDT/EST automatically).
+          # If already past midnight (GitHub fired very late), book immediately.
+          # Safety cap: if wait > 2 hours something is wrong, skip and book now.
+          TARGET=$(python3 -c "
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+          tz = ZoneInfo('America/New_York')
+          now = datetime.now(tz)
+          tomorrow = now.date() + timedelta(days=1)
+          t = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz)
+          print(int(t.timestamp()))
+          ")
+          NOW=$(date -u +%s)
+          DIFF=$((TARGET - NOW))
+          if [ $DIFF -gt 7200 ]; then
+            echo "Wait ${DIFF}s exceeds safety cap — GitHub fired late. Booking immediately."
+          elif [ $DIFF -gt 0 ]; then
+            echo "Waiting ${DIFF}s until midnight Eastern..."
+            sleep $DIFF
+          else
+            echo "Already past midnight Eastern — booking immediately."
+          fi
+
+      - name: Book tee time
+        id: book
+        env:
+          GOLF_BACKEND: foreup
+          GOLF_CLUB_NAME: Fort Myers Country Club
+          GOLF_CLUB_USERNAME: ${{ secrets.FORTMYERS_USERNAME }}
+          GOLF_CLUB_PASSWORD: ${{ secrets.FORTMYERS_PASSWORD }}
+          FOREUP_FACILITY_ID: '22052'
+          FOREUP_SCHEDULE_ID: '9710'
+          AUTO_RESERVE_PLAYERS: '4'
+          AUTO_RESERVE_PLAYER_NAMES: ${{ secrets.FORTMYERS_PLAYER_NAMES }}
+          AUTO_RESERVE_PREFERRED_TIME: '10:30 AM'
+          AUTO_RESERVE_MIN_TIME: '10:20 AM'
+          AUTO_RESERVE_MAX_TIME: '11:00 AM'
+          AUTO_RESERVE_DAYS_AHEAD: '7'
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.date }}"
+          fi
+          if [ -n "${{ github.event.inputs.time_preference }}" ]; then
+            ARGS="$ARGS --time '${{ github.event.inputs.time_preference }}'"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          eval python auto_reserve.py $ARGS
+
+      - name: Send SMS notification
+        if: always()
+        env:
+          PHONE: ${{ secrets.FORTMYERS_PHONE }}
+          GROUP_PHONES: ${{ secrets.FORTMYERS_GROUP_PHONES }}
+          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
+        run: |
+          if [ -z "$PHONE" ]; then
+            echo "FORTMYERS_PHONE secret not set — skipping SMS"
+            exit 0
+          fi
+
+          KEY="${TEXTBELT_KEY:-textbelt}"
+
+          TARGET=$(python3 -c "
+          from datetime import date, timedelta
+          override = '${{ github.event.inputs.date }}'
+          if override:
+              print(override)
+          else:
+              print((date.today() + timedelta(days=7)).strftime('%Y-%m-%d'))
+          ")
+
+          OUTCOME="${{ steps.book.outcome }}"
+
+          send_sms() {
+            local NUMBER="$1"
+            local MSG="$2"
+            curl -s -X POST https://textbelt.com/text \
+              --data-urlencode "phone=$NUMBER" \
+              --data-urlencode "message=$MSG" \
+              -d "key=$KEY" || echo "SMS to $NUMBER failed"
+          }
+
+          if [ "$OUTCOME" = "success" ]; then
+            SUCCESS_MSG=$(python3 -c "import json; d=json.load(open('booking_result.json')); dt=d.get('date','TBD'); tm=d.get('time','TBD'); players=', '.join(d.get('players',[])); print(f\"Sandbagger Tee Hawk 🤖 🦅: Tee time locked in at Fort Myers Country Club - {dt} at {tm} - {players}\")" 2>/dev/null || printf "Sandbagger Tee Hawk 🤖 🦅: Tee time locked in at Fort Myers Country Club")
+            PHONES="${GROUP_PHONES:-$PHONE}"
+            IFS=',' read -ra NUMS <<< "$PHONES"
+            for NUM in "${NUMS[@]}"; do
+              NUM=$(echo "$NUM" | tr -d ' ')
+              [ -n "$NUM" ] && send_sms "$NUM" "$SUCCESS_MSG"
+            done
+          else
+            FAIL_MSG="Sandbagger Tee Hawk 🤖 🦅: Booking FAILED for $TARGET at Fort Myers. Check the Actions logs."
+            send_sms "$PHONE" "$FAIL_MSG"
+          fi

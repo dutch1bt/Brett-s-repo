@@ -23,9 +23,19 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-import golf_agent
-
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# BACKEND — swap via GOLF_BACKEND env var
+#   "lakelands"  → lakeland_backend (Playwright, default)
+#   "foreup"     → foreup_backend   (REST API, no browser needed)
+# ---------------------------------------------------------------------------
+
+_backend = os.getenv("GOLF_BACKEND", "lakelands").lower()
+if _backend == "foreup":
+    import foreup_backend as golf_agent
+else:
+    import golf_agent  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION — set via .env or environment variables
@@ -33,21 +43,20 @@ load_dotenv()
 
 PLAYERS: int = int(os.getenv("AUTO_RESERVE_PLAYERS", "4"))
 
-# Comma-separated player names — P1 (Brett) is auto-filled by the club system;
-# include all names here so they're logged and passed to the backend.
 _raw_names = os.getenv(
     "AUTO_RESERVE_PLAYER_NAMES",
     "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
 )
 PLAYER_NAMES: list[str] = [n.strip() for n in _raw_names.split(",") if n.strip()]
 
-# If player names aren't configured, fall back to member ID as sole name
 if not PLAYER_NAMES:
     PLAYER_NAMES = [os.getenv("GOLF_CLUB_MEMBER_ID", "Member")]
 
-# Preferred tee time — book this slot if available, otherwise fall back to
-# the earliest slot. Format must match what the booking site returns (e.g. "7:30 AM").
 PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
+
+# Optional time window — slots outside [MIN_TIME, MAX_TIME] are excluded.
+MIN_TIME: str = os.getenv("AUTO_RESERVE_MIN_TIME", "")
+MAX_TIME: str = os.getenv("AUTO_RESERVE_MAX_TIME", "")
 
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
@@ -71,21 +80,11 @@ log = logging.getLogger(__name__)
 # HELPERS
 # ---------------------------------------------------------------------------
 
-def target_sunday() -> str:
-    """Return the date 14 days from today (YYYY-MM-DD).
-
-    Enforces that today is Sunday only when triggered by the cron schedule.
-    Manual triggers (Siri, GitHub UI) can run any day of the week.
-    """
+def target_date() -> str:
+    """Return the booking target date (YYYY-MM-DD), DAYS_AHEAD days from today."""
+    days_ahead = int(os.getenv("AUTO_RESERVE_DAYS_AHEAD", "14"))
     today = datetime.now().date()
-    target = today + timedelta(days=14)
-    is_cron = os.getenv("GITHUB_EVENT_NAME") == "schedule"
-    if is_cron and target.weekday() != 6:  # 6 = Sunday
-        raise ValueError(
-            f"Today is {today.strftime('%A')} — target date {target} is not a Sunday. "
-            "Cron should only run on Sundays."
-        )
-    return target.strftime("%Y-%m-%d")
+    return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
 
 def _time_to_mins(time_str: str) -> int | None:
@@ -99,26 +98,58 @@ def _time_to_mins(time_str: str) -> int | None:
     return None
 
 
-def pick_slot(slots: list[dict], target_time: str | None = None) -> dict | None:
+def pick_slot(
+    slots: list[dict],
+    target_time: str | None = None,
+    min_time: str | None = None,
+    max_time: str | None = None,
+) -> dict | None:
     """
-    Return the earliest slot at or after target_time (e.g. '1:00 PM').
-    If target_time is empty or unparseable, return the earliest slot.
-    Falls back to earliest if no slots exist at or after the target.
+    Return the best available slot given optional constraints:
+      min_time  — no earlier than this (e.g. '10:20 AM')
+      max_time  — no later than this  (e.g. '11:00 AM')
+      target_time — preferred time; returns earliest slot at or after this
+
+    Priority: window filter → target_time → earliest overall.
+    Falls back to earliest overall if no slots survive the window filter.
     """
     if not slots:
         return None
+
+    working = slots
+
+    # Apply time window
+    if min_time or max_time:
+        min_m = _time_to_mins(min_time) if min_time else 0
+        max_m = _time_to_mins(max_time) if max_time else 24 * 60
+        windowed = [
+            s for s in working
+            if min_m <= (_time_to_mins(s["time"]) or 0) <= max_m
+        ]
+        if windowed:
+            log.info("Window [%s – %s]: %d slot(s) qualify.", min_time, max_time, len(windowed))
+            working = windowed
+        else:
+            log.warning(
+                "No slots in window [%s – %s] — ignoring window, using all slots.",
+                min_time, max_time,
+            )
+
     if not target_time:
-        return slots[0]
+        return working[0]
+
     target_mins = _time_to_mins(target_time)
     if target_mins is None:
         log.warning("Could not parse target time %r — using earliest slot", target_time)
-        return slots[0]
-    eligible = [s for s in slots if (_time_to_mins(s["time"]) or 0) >= target_mins]
+        return working[0]
+
+    eligible = [s for s in working if (_time_to_mins(s["time"]) or 0) >= target_mins]
     if eligible:
-        log.info("Target 'after %s' → earliest eligible slot: %s", target_time, eligible[0]["time"])
+        log.info("Target 'at or after %s' → %s", target_time, eligible[0]["time"])
         return eligible[0]
-    log.warning("No slots at or after %s — using earliest available: %s", target_time, slots[0]["time"])
-    return slots[0]
+
+    log.warning("No slots at or after %s — using earliest: %s", target_time, working[0]["time"])
+    return working[0]
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +173,9 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
         date = date_override
         log.info("Using override date: %s", date)
     else:
-        try:
-            date = target_sunday()
-        except ValueError as e:
-            log.error("Date error: %s", e)
-            return 1
+        date = target_date()
 
-    log.info("Target Sunday: %s", date)
+    log.info("Target date: %s", date)
 
     # 2. Fetch available slots — retry for up to 90 s so we catch the exact
     #    moment the booking window opens (script starts at 7:29, window at 7:30).
@@ -167,8 +194,13 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
         log.error("No available tee times on %s for %d player(s). No reservation made.", date, PLAYERS)
         return 1
 
-    # 3. Pick the best slot (earliest, or closest to target_time if specified)
-    slot = pick_slot(slots, target_time or None)
+    # 3. Pick the best slot within the configured time window
+    slot = pick_slot(
+        slots,
+        target_time=target_time or None,
+        min_time=MIN_TIME or None,
+        max_time=MAX_TIME or None,
+    )
     log.info(
         "Booking slot: %s — $%s/player, cart %s",
         slot["time"],
