@@ -57,8 +57,12 @@ def _foreup_date(date: str) -> str:
 
 
 def _display_time(raw: str) -> str:
-    """HH:MM(:SS) → '10:30 AM'."""
-    for fmt in ("%H:%M:%S", "%H:%M"):
+    """Parse various ForeUp time formats → '10:30 AM'.
+
+    Unauthenticated API calls return full datetime strings ('2026-08-01 10:21').
+    Authenticated calls return plain time strings ('10:21' or '10:21:00').
+    """
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%H:%M:%S", "%H:%M"):
         try:
             return datetime.strptime(raw, fmt).strftime("%-I:%M %p")
         except ValueError:
