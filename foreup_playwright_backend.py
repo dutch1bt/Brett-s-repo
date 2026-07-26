@@ -7,20 +7,34 @@ ForeUp's IP-level block of GitHub Actions datacenter ranges.
 Same public interface as foreup_backend.py:
   _fetch_available_tee_times(date, players) -> list[dict]
   _make_reservation(date, time, players, player_names, member_id) -> dict
+
+Strategy
+--------
+1. Launch Chromium (looks like a real Mac/Chrome user → not blocked).
+2. Navigate to the ForeUp booking page to seed the browser context.
+3. Call the ForeUp API *from inside the browser* via page.evaluate(fetch(…)).
+   The browser's own network stack, TLS fingerprint, and cookie jar are
+   used, so requests are indistinguishable from the Angular app's own calls.
+4. Return the parsed results.
+
+This avoids:
+  - Angular's date-routing quirks (the hash fragment is not reliable).
+  - Fragile UI-element selectors.
+  - The TCP-level IP block that affects raw Python requests.
 """
 
 import logging
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 
-from playwright.sync_api import Page, sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright.sync_api import Page, sync_playwright
 
 log = logging.getLogger(__name__)
 
 FACILITY_ID = os.getenv("FOREUP_FACILITY_ID", "22052")
 SCHEDULE_ID = os.getenv("FOREUP_SCHEDULE_ID", "9710")
+BOOKING_CLASS = "memberwebsite"
 DEBUG_DIR = Path(__file__).parent / "debug_screenshots"
 
 # ---------------------------------------------------------------------------
@@ -38,7 +52,7 @@ def _screenshot(page: Page, label: str) -> None:
 
 
 def _foreup_date(date: str) -> str:
-    """YYYY-MM-DD → MM-DD-YYYY (ForeUp URL/API format)."""
+    """YYYY-MM-DD → MM-DD-YYYY (ForeUp API format)."""
     return datetime.strptime(date, "%Y-%m-%d").strftime("%m-%d-%Y")
 
 
@@ -72,13 +86,15 @@ def _new_context(pw):
 # Login
 # ---------------------------------------------------------------------------
 
-def _login(page: Page) -> None:
-    """Log in to ForeUp by calling the API via fetch() inside the browser context.
+def _login(page: Page) -> bool:
+    """
+    Log in to ForeUp by calling the login API via fetch() inside the browser.
 
     Running fetch() from within the page inherits the browser's cookie jar and
-    TLS session, so the server's Set-Cookie response is stored automatically.
-    After this call the Angular app will see an authenticated session on the
-    next page load / navigation.
+    TLS fingerprint, so the server's Set-Cookie response is stored automatically.
+    Subsequent fetch() calls in the same context will be authenticated.
+
+    Returns True on apparent success (customer_id present in response).
     """
     username = os.getenv("GOLF_CLUB_USERNAME", "")
     password = os.getenv("GOLF_CLUB_PASSWORD", "")
@@ -109,47 +125,105 @@ def _login(page: Page) -> None:
             }
         """, [username, password])
 
-        log.info("Login fetch: ok=%s status=%s customer_id=%s",
-                 result.get("ok"), result.get("status"),
-                 result.get("data", {}).get("customer_id", "n/a"))
-
-        # Store user data in localStorage so Angular's $localStorage recognises
-        # the session without a round-trip to verify the cookie.
         user_data = result.get("data") or {}
-        if user_data.get("customer_id") or user_data.get("id") or user_data.get("token"):
-            page.evaluate("""
-                (d) => {
-                    try { localStorage.setItem('ngStorage-user', JSON.stringify(d)); } catch(_) {}
-                    try { localStorage.setItem('fg_user',        JSON.stringify(d)); } catch(_) {}
-                }
-            """, user_data)
-            log.info("Stored user data in localStorage (customer_id=%s)",
-                     user_data.get("customer_id") or user_data.get("id"))
-        else:
-            log.warning("Login response missing user id — credentials may be wrong: %s",
-                        str(result.get("data", {}))[:300])
+        customer_id = user_data.get("customer_id") or user_data.get("id")
+        log.info("Login fetch: ok=%s status=%s customer_id=%s",
+                 result.get("ok"), result.get("status"), customer_id or "n/a")
+
+        if not result.get("ok"):
+            log.warning("Login response not-ok: %s", str(result.get("data", {}))[:300])
+            return False
+
+        if not customer_id and not user_data.get("token"):
+            log.warning("Login response missing customer_id/token: %s",
+                        str(user_data)[:300])
+            return False
+
+        # Mirror into localStorage so Angular's $localStorage sees the session
+        # without needing a full page reload.
+        page.evaluate("""
+            (d) => {
+                try { localStorage.setItem('ngStorage-user', JSON.stringify(d)); } catch(_) {}
+                try { localStorage.setItem('fg_user',        JSON.stringify(d)); } catch(_) {}
+            }
+        """, user_data)
+        log.info("Login OK — customer_id=%s", customer_id)
+        return True
 
     except Exception as exc:
-        log.warning("In-page login fetch exception: %s", exc)
-
-    page.wait_for_timeout(1000)
-    _screenshot(page, "03_post_login")
-    log.info("After login attempt: %s", page.url)
+        log.warning("Login fetch exception: %s", exc)
+        return False
 
 
-def _is_logged_in(page: Page) -> bool:
-    for sel in [
-        ".logout", "text=Logout", "text=Log Out",
-        ".user-name", ".member-name", ".logged-in-user",
-        "[ng-show*='loggedIn']", "[ng-if*='loggedIn']",
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if loc.count() and loc.is_visible():
-                return True
-        except Exception:
-            continue
-    return False
+# ---------------------------------------------------------------------------
+# Direct API helpers (run inside the browser via page.evaluate)
+# ---------------------------------------------------------------------------
+
+_FETCH_TIMES_JS = """
+    async ([date, players, scheduleId, facilityId, bookingClass]) => {
+        const params = new URLSearchParams({
+            time: 'all',
+            date: date,
+            holes: 'all',
+            players: String(players),
+            booking_class: bookingClass,
+            schedule_id: scheduleId,
+            'schedule_ids[]': scheduleId,
+            specials_only: '0',
+            api_key: 'no_limits',
+            facility_id: facilityId,
+        });
+        try {
+            const resp = await fetch('/index.php/api/booking/times?' + params, {
+                credentials: 'include',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                },
+            });
+            const data = await resp.json();
+            return {ok: resp.ok, status: resp.status, data: data};
+        } catch(e) {
+            return {ok: false, error: String(e)};
+        }
+    }
+"""
+
+_RESERVE_JS = """
+    async ([payload]) => {
+        try {
+            const resp = await fetch('/index.php/api/booking/users/reservations', {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                },
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+            return {ok: resp.ok, status: resp.status, data: data};
+        } catch(e) {
+            return {ok: false, error: String(e)};
+        }
+    }
+"""
+
+
+def _browser_fetch_times(page: Page, foreup_fmt: str, players: int) -> list:
+    """Call the ForeUp times API from within the browser and return raw items."""
+    result = page.evaluate(
+        _FETCH_TIMES_JS,
+        [foreup_fmt, players, SCHEDULE_ID, FACILITY_ID, BOOKING_CLASS],
+    )
+    log.info("Times fetch: ok=%s status=%s", result.get("ok"), result.get("status"))
+    raw = result.get("data")
+    if isinstance(raw, list):
+        log.info("  → %d raw items", len(raw))
+        return raw
+    log.warning("Unexpected times response: %s", str(raw)[:300])
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -158,59 +232,34 @@ def _is_logged_in(page: Page) -> bool:
 
 def _fetch_available_tee_times(date: str, players: int) -> list[dict]:
     foreup_fmt = _foreup_date(date)
-    captured: list[dict] = []
-
-    def on_response(resp):
-        if "/booking/times" not in resp.url:
-            return
-        log.info("API response: %s %s", resp.status, resp.url)
-        # Ignore the Angular app's initial default-date call; only keep our date.
-        if foreup_fmt not in resp.url:
-            log.info("  → skipping (not target date %s)", foreup_fmt)
-            return
-        try:
-            data = resp.json()
-            if isinstance(data, list):
-                captured.extend(data)
-                log.info("  → captured %d time items", len(data))
-        except Exception as e:
-            log.debug("  → JSON parse failed: %s", e)
 
     with sync_playwright() as pw:
         browser, bctx = _new_context(pw)
         page = bctx.new_page()
-        page.on("response", on_response)
 
         try:
-            url = (
+            # Navigate to the booking page to seed the browser context/cookies
+            base_url = (
                 f"https://foreupsoftware.com/index.php/booking/"
-                f"{FACILITY_ID}/{SCHEDULE_ID}#teetimes/{foreup_fmt}"
+                f"{FACILITY_ID}/{SCHEDULE_ID}"
             )
-            log.info("Loading: %s", url)
-            page.goto(url, wait_until="networkidle", timeout=45_000)
-            page.wait_for_timeout(3000)
+            log.info("Loading base page: %s", base_url)
+            page.goto(base_url, wait_until="networkidle", timeout=45_000)
+            page.wait_for_timeout(2000)
             _screenshot(page, "01_initial")
 
-            if not _is_logged_in(page):
-                _login(page)
-                # Re-navigate after login so the date-specific times load
-                page.goto(url, wait_until="networkidle", timeout=30_000)
-                page.wait_for_timeout(3000)
-                _screenshot(page, "04_post_login_nav")
+            # Log in; this sets the session cookie in the browser context
+            _login(page)
+            _screenshot(page, "02_post_login")
 
-            # Give Angular time to fetch and render times
-            page.wait_for_timeout(2000)
-            _screenshot(page, "05_times_page")
+            # Fetch tee times via the authenticated browser context
+            log.info("Fetching times for %s (%d players)", foreup_fmt, players)
+            raw_times = _browser_fetch_times(page, foreup_fmt, players)
+            _screenshot(page, "03_times_fetched")
 
-            if not captured:
-                log.warning("No API responses captured — trying page text fallback")
-                # Fallback: scrape times from DOM
-                body = page.evaluate("document.body.innerText") or ""
-                log.info("Page text (500): %r", body[:500])
-
-            # Build slot list from captured API data
+            # Build slot list
             slots = []
-            for item in captured:
+            for item in raw_times:
                 if not isinstance(item, dict) or not item.get("time"):
                     continue
                 avail = item.get("available_spots") or item.get("spots") or 4
@@ -228,7 +277,8 @@ def _fetch_available_tee_times(date: str, players: int) -> list[dict]:
                     "raw": item,
                 })
 
-            log.info("ForeUp Playwright: %d slot(s) for %s (%d players)", len(slots), date, players)
+            log.info("ForeUp Playwright: %d slot(s) for %s (%d players)",
+                     len(slots), date, players)
             return slots
 
         except Exception as exc:
@@ -251,180 +301,83 @@ def _make_reservation(
     member_id: str = "",
 ) -> dict:
     foreup_fmt = _foreup_date(date)
-    captured: list[dict] = []
-
-    def on_response(resp):
-        if "/booking/times" in resp.url:
-            try:
-                data = resp.json()
-                if isinstance(data, list):
-                    captured.extend(data)
-            except Exception:
-                pass
 
     with sync_playwright() as pw:
         browser, bctx = _new_context(pw)
         page = bctx.new_page()
-        page.on("response", on_response)
 
         try:
-            url = (
+            base_url = (
                 f"https://foreupsoftware.com/index.php/booking/"
-                f"{FACILITY_ID}/{SCHEDULE_ID}#teetimes/{foreup_fmt}"
+                f"{FACILITY_ID}/{SCHEDULE_ID}"
             )
-            page.goto(url, wait_until="networkidle", timeout=45_000)
-            page.wait_for_timeout(3000)
+            log.info("Loading base page: %s", base_url)
+            page.goto(base_url, wait_until="networkidle", timeout=45_000)
+            page.wait_for_timeout(2000)
 
-            if not _is_logged_in(page):
-                _login(page)
-                page.goto(url, wait_until="networkidle", timeout=30_000)
-                page.wait_for_timeout(3000)
+            ok = _login(page)
+            if not ok:
+                return {"success": False, "message": "Login failed — check credentials"}
 
-            _screenshot(page, "05_booking_page")
+            # Fetch available times to locate the target slot's raw data
+            log.info("Fetching times to locate slot '%s' on %s", time, foreup_fmt)
+            raw_times = _browser_fetch_times(page, foreup_fmt, players)
 
-            # --- Find and click the target time slot ---
-            # ForeUp renders times as Angular components. Try multiple selectors.
-            time_upper = time.upper()
-            time_12h_alt = time  # e.g. '10:30 AM'
-
-            clicked_slot = False
-            for sel in [
-                f"text='{time_upper}'",
-                f"text='{time_12h_alt}'",
-                f".booking-start-time:has-text('{time_upper}')",
-                f".time:has-text('{time_upper}')",
-                f"[class*='time']:has-text('{time_upper}')",
-                f"td:has-text('{time_upper}')",
-                f"li:has-text('{time_upper}')",
-            ]:
-                try:
-                    loc = page.locator(sel).first
-                    if loc.count() and loc.is_visible():
-                        # Look for a Book button adjacent to this time
-                        container = loc.locator(
-                            "xpath=ancestor::*[contains(@class,'tee') "
-                            "or contains(@class,'slot') "
-                            "or contains(@class,'row') "
-                            "or contains(@class,'booking')][1]"
-                        ).first
-                        book_btn = container.locator(
-                            "text='Book', button:has-text('Book'), "
-                            "[ng-click*='book'], .btn-book"
-                        ).first
-                        if book_btn.count() and book_btn.is_visible():
-                            book_btn.click()
-                            log.info("Clicked Book button for %s", time)
-                        else:
-                            loc.click()
-                            log.info("Clicked time element for %s", time)
-                        clicked_slot = True
-                        break
-                except Exception:
-                    continue
-
-            if not clicked_slot:
-                log.warning("Could not find time slot %s on page", time)
-                _screenshot(page, "error_no_slot")
+            target_slot = next(
+                (item for item in raw_times
+                 if _display_time(item.get("time", "")) == time),
+                None,
+            )
+            if not target_slot:
                 return {
                     "success": False,
-                    "message": f"Could not find time slot {time} on the booking page.",
+                    "message": f"Slot '{time}' not found on {date}",
                 }
 
-            page.wait_for_timeout(2000)
-            _screenshot(page, "06_booking_form")
-
-            # --- Set player count if there's a selector ---
-            for sel in [
-                f"select option[value='{players}']",
-                f"[ng-model*='players'] option[value='{players}']",
-                f"select[name*='players']",
-            ]:
-                try:
-                    loc = page.locator(f"select:has(option[value='{players}'])").first
-                    if loc.count() and loc.is_visible():
-                        loc.select_option(str(players))
-                        log.info("Set player count to %d", players)
-                        break
-                except Exception:
-                    continue
-
-            page.wait_for_timeout(500)
-
-            # --- Submit ---
-            submitted = False
-            for sel in [
-                "button:has-text('Book')",
-                "button:has-text('Reserve')",
-                "button:has-text('Confirm')",
-                "button:has-text('Complete')",
-                "button:has-text('Submit')",
-                "[ng-click*='book']",
-                "[ng-click*='reserve']",
-                "[ng-click*='confirm']",
-                ".btn-book", ".btn-reserve", ".btn-confirm",
-                'button[type="submit"]',
-                'input[type="submit"]',
-            ]:
-                try:
-                    loc = page.locator(sel).first
-                    if loc.count() and loc.is_visible():
-                        loc.click()
-                        log.info("Submitted via: %s", sel)
-                        submitted = True
-                        break
-                except Exception:
-                    continue
-
-            if not submitted:
-                log.warning("Could not find submit button — logging visible buttons")
-                btns = page.evaluate("""
-                    () => [...document.querySelectorAll('button,input[type=submit],a.btn')]
-                        .filter(el => el.offsetParent)
-                        .map(el => ({tag: el.tagName, text: (el.textContent||el.value||'').trim().slice(0,60)}))
-                """)
-                for b in btns:
-                    log.info("  Visible button: %s %r", b['tag'], b['text'])
-
-            page.wait_for_timeout(5000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=20_000)
-            except Exception:
-                pass
-            _screenshot(page, "07_confirmation")
-
-            body = page.evaluate("document.body.innerText") or ""
-            log.info("Post-booking text (600): %r", body[:600])
-
-            # Look for confirmation number
-            conf_match = re.search(
-                r"(?:confirmation|booking|reservation)[:\s#]*([A-Z0-9\-]{4,20})"
-                r"|#\s*(\d{5,})",
-                body, re.IGNORECASE,
-            )
-            if conf_match:
-                conf_number = conf_match.group(1) or conf_match.group(2)
-                return {
-                    "success": True,
-                    "confirmation_number": conf_number,
-                    "message": f"Reserved {date} at {time}",
-                }
-
-            # Accept generic success words
-            if any(w in body.lower() for w in ["confirmed", "booked", "reserved", "success", "thank you"]):
-                return {
-                    "success": True,
-                    "confirmation_number": "BOOKED",
-                    "message": f"Reserved {date} at {time} — check email for confirmation number",
-                }
-
-            _screenshot(page, "error_no_confirmation")
-            return {
-                "success": False,
-                "message": (
-                    f"Booking submitted but could not confirm success. "
-                    f"Page text: {body[:300]}"
-                ),
+            # Build reservation payload
+            payload: dict = {
+                **target_slot,
+                "time": target_slot["time"],
+                "date": foreup_fmt,
+                "players": players,
+                "holes": 18,
+                "schedule_id": SCHEDULE_ID,
+                "schedule_ids[]": SCHEDULE_ID,
+                "booking_class": BOOKING_CLASS,
+                "api_key": "no_limits",
+                "facility_id": FACILITY_ID,
             }
+            for i, name in enumerate(player_names[:players], 1):
+                payload[f"player{i}"] = name
+
+            log.info("Submitting reservation for %s at %s (%d players)", date, time, players)
+            reserve_result = page.evaluate(_RESERVE_JS, [payload])
+            log.info("Reserve fetch: ok=%s status=%s",
+                     reserve_result.get("ok"), reserve_result.get("status"))
+            _screenshot(page, "04_post_reserve")
+
+            result_data = reserve_result.get("data") or {}
+            log.info("Reserve response: %s", str(result_data)[:400])
+
+            booking_id = (
+                result_data.get("booking_id")
+                or result_data.get("id")
+                or result_data.get("reservation_id")
+                or result_data.get("tee_time_id")
+            )
+            if booking_id:
+                return {
+                    "success": True,
+                    "message": f"Reserved {date} at {time}",
+                    "confirmation_number": str(booking_id),
+                }
+
+            error = (
+                result_data.get("error")
+                or result_data.get("message")
+                or str(result_data)
+            )
+            return {"success": False, "message": error}
 
         except Exception as exc:
             log.error("Reserve error: %s", exc)
