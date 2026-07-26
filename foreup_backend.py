@@ -37,11 +37,12 @@ def _session() -> tuple[requests.Session, dict]:
         data={
             "username": username,
             "password": password,
-            "booking_class_id": False,
             "api_key": "no_limits",
         },
         timeout=20,
     )
+    if not resp.ok:
+        log.error("ForeUp login HTTP %s: %s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     data = resp.json()
     log.info("ForeUp login: customer_id=%s", data.get("customer_id") or data.get("id"))
