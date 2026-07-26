@@ -33,11 +33,11 @@ def _session() -> tuple[requests.Session, dict]:
     password = os.getenv("GOLF_CLUB_PASSWORD", "")
 
     resp = s.post(
-        f"{BASE_URL}/booking/login",
+        f"{BASE_URL}/booking/users/login",
         data={
             "username": username,
             "password": password,
-            "booking_class": BOOKING_CLASS,
+            "booking_class_id": False,
             "api_key": "no_limits",
         },
         timeout=20,
@@ -132,6 +132,7 @@ def _make_reservation(
 
     try:
         payload = {
+            **target_slot,
             "time": target_slot["time"],
             "date": _foreup_date(date),
             "players": players,
@@ -146,10 +147,11 @@ def _make_reservation(
             payload[f"player{i}"] = name
 
         resp = session.post(
-            f"{BASE_URL}/booking/reserve",
-            data=payload,
+            f"{BASE_URL}/booking/users/reservations",
+            json=payload,
             timeout=30,
         )
+        log.info("ForeUp reserve status: %s", resp.status_code)
         resp.raise_for_status()
         result = resp.json()
         log.info("ForeUp reserve response: %s", result)
