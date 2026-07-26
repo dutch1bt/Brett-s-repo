@@ -73,84 +73,68 @@ def _new_context(pw):
 # ---------------------------------------------------------------------------
 
 def _login(page: Page) -> None:
-    """Log in to ForeUp through the browser UI."""
+    """Log in to ForeUp by calling the API via fetch() inside the browser context.
+
+    Running fetch() from within the page inherits the browser's cookie jar and
+    TLS session, so the server's Set-Cookie response is stored automatically.
+    After this call the Angular app will see an authenticated session on the
+    next page load / navigation.
+    """
     username = os.getenv("GOLF_CLUB_USERNAME", "")
     password = os.getenv("GOLF_CLUB_PASSWORD", "")
-    log.info("Logging in as %s", username)
-
+    log.info("Logging in as %s via in-page fetch", username)
     _screenshot(page, "01_pre_login")
 
-    # Click the Login link/button
-    for sel in [
-        "text=Login", "text=Log In", "text=Sign In",
-        "a:has-text('Login')", "button:has-text('Login')",
-        ".login-link", ".login-btn", "[ng-click*='login']",
-        ".fa-sign-in-alt", ".glyphicon-user",
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if loc.count() and loc.is_visible():
-                loc.click()
-                log.info("Clicked login trigger: %s", sel)
-                break
-        except Exception:
-            continue
-
-    page.wait_for_timeout(2000)
-    _screenshot(page, "02_login_modal")
-
-    # Fill email / username
-    for sel in [
-        'input[type="email"]',
-        'input[placeholder*="email" i]',
-        'input[placeholder*="user" i]',
-        'input[name*="user" i]',
-        'input[id*="user" i]',
-        'input[type="text"]',
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if loc.count() and loc.is_visible():
-                loc.fill(username)
-                log.info("Filled username via: %s", sel)
-                break
-        except Exception:
-            continue
-
-    # Fill password
     try:
-        page.locator('input[type="password"]').first.fill(password)
-    except Exception as e:
-        log.warning("Could not fill password: %s", e)
+        result = page.evaluate("""
+            async ([u, p]) => {
+                try {
+                    const resp = await fetch('/index.php/api/booking/users/login', {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Accept': 'application/json, text/javascript, */*; q=0.01',
+                        },
+                        body: 'username=' + encodeURIComponent(u)
+                            + '&password=' + encodeURIComponent(p)
+                            + '&api_key=no_limits',
+                    });
+                    const data = await resp.json();
+                    return {ok: resp.ok, status: resp.status, data: data};
+                } catch(e) {
+                    return {ok: false, error: String(e)};
+                }
+            }
+        """, [username, password])
 
-    page.wait_for_timeout(300)
+        log.info("Login fetch: ok=%s status=%s customer_id=%s",
+                 result.get("ok"), result.get("status"),
+                 result.get("data", {}).get("customer_id", "n/a"))
 
-    # Submit
-    for sel in [
-        'button[type="submit"]',
-        'input[type="submit"]',
-        "button:has-text('Login')",
-        "button:has-text('Log In')",
-        "button:has-text('Sign In')",
-        "[ng-click*='login']",
-        ".btn-login", ".btn-primary",
-    ]:
-        try:
-            loc = page.locator(sel).first
-            if loc.count() and loc.is_visible():
-                loc.click()
-                log.info("Submitted login via: %s", sel)
-                break
-        except Exception:
-            continue
+        # Store user data in localStorage so Angular's $localStorage recognises
+        # the session without a round-trip to verify the cookie.
+        user_data = result.get("data") or {}
+        if user_data.get("customer_id") or user_data.get("id") or user_data.get("token"):
+            page.evaluate("""
+                (d) => {
+                    try { localStorage.setItem('ngStorage-user', JSON.stringify(d)); } catch(_) {}
+                    try { localStorage.setItem('fg_user',        JSON.stringify(d)); } catch(_) {}
+                }
+            """, user_data)
+            log.info("Stored user data in localStorage (customer_id=%s)",
+                     user_data.get("customer_id") or user_data.get("id"))
+        else:
+            log.warning("Login response missing user id — credentials may be wrong: %s",
+                        str(result.get("data", {}))[:300])
 
-    page.wait_for_timeout(4000)
-    try:
-        page.wait_for_load_state("networkidle", timeout=15_000)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("In-page login fetch exception: %s", exc)
+
+    page.wait_for_timeout(1000)
     _screenshot(page, "03_post_login")
-    log.info("After login: %s", page.url)
+    log.info("After login attempt: %s", page.url)
 
 
 def _is_logged_in(page: Page) -> bool:
@@ -177,15 +161,20 @@ def _fetch_available_tee_times(date: str, players: int) -> list[dict]:
     captured: list[dict] = []
 
     def on_response(resp):
-        if "/booking/times" in resp.url:
-            log.info("API response: %s %s", resp.status, resp.url)
-            try:
-                data = resp.json()
-                if isinstance(data, list):
-                    captured.extend(data)
-                    log.info("  → captured %d time items", len(data))
-            except Exception as e:
-                log.debug("  → JSON parse failed: %s", e)
+        if "/booking/times" not in resp.url:
+            return
+        log.info("API response: %s %s", resp.status, resp.url)
+        # Ignore the Angular app's initial default-date call; only keep our date.
+        if foreup_fmt not in resp.url:
+            log.info("  → skipping (not target date %s)", foreup_fmt)
+            return
+        try:
+            data = resp.json()
+            if isinstance(data, list):
+                captured.extend(data)
+                log.info("  → captured %d time items", len(data))
+        except Exception as e:
+            log.debug("  → JSON parse failed: %s", e)
 
     with sync_playwright() as pw:
         browser, bctx = _new_context(pw)
