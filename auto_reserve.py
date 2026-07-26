@@ -27,13 +27,16 @@ load_dotenv()
 
 # ---------------------------------------------------------------------------
 # BACKEND — swap via GOLF_BACKEND env var
-#   "lakelands"  → lakeland_backend (Playwright, default)
-#   "foreup"     → foreup_backend   (REST API, no browser needed)
+#   "lakelands"          → lakeland_backend          (Playwright, default)
+#   "foreup"             → foreup_backend             (REST API)
+#   "foreup_playwright"  → foreup_playwright_backend  (Playwright, bypasses IP block)
 # ---------------------------------------------------------------------------
 
 _backend = os.getenv("GOLF_BACKEND", "lakelands").lower()
 if _backend == "foreup":
     import foreup_backend as golf_agent
+elif _backend == "foreup_playwright":
+    import foreup_playwright_backend as golf_agent  # type: ignore[no-redef]
 else:
     import golf_agent  # type: ignore[no-redef]
 
