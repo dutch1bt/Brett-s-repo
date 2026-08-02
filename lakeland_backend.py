@@ -782,9 +782,14 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     n_avail = available_cells.count()
     log.info("NC_TimeSlotPanelSlotAvailable cells: %d", n_avail)
 
+    # Each open player spot in a tee time gets its own NC_TimeSlotPanelSlotAvailable
+    # cell. A fully empty 4-player tee time therefore has 4 such cells at the same
+    # time; a partially-booked tee time (e.g. 2 already reserved) has only 2.
+    # We count cells per parsed time and only accept times where count >= players.
+    time_slot_map: dict = {}  # "7:30 AM" -> {"count": int, "first_index": int}
+
     for i in range(n_avail):
         cell = available_cells.nth(i)
-        # Time lives in a <span class="timeText"> inside the cell
         time_span = cell.locator("span.timeText").first
         if time_span.count():
             raw = (time_span.text_content() or "").strip()
@@ -794,64 +799,28 @@ def _parse_slots(ctx, players: int) -> list[dict]:
         if not t:
             log.warning("Available cell %d: could not parse time from %r", i, raw[:60])
             continue
+        if t not in time_slot_map:
+            time_slot_map[t] = {"count": 0, "first_index": i}
+        time_slot_map[t]["count"] += 1
 
-        # Skip partially-booked slots — only book into completely empty tee times.
-        # NC_TimeSlotPanelSlotAvailable marks ANY slot with open spots, including ones
-        # where other players are already booked. Walk up the DOM to find the tee-time
-        # block container and check if it has any existing bookings alongside this slot.
-        try:
-            block_info = cell.evaluate("""
-                el => {
-                    // Walk up looking for a container that owns multiple NC_TimeSlot elements
-                    let node = el;
-                    for (let depth = 0; depth < 8; depth++) {
-                        if (!node.parentElement) break;
-                        node = node.parentElement;
-                        const allSlots = node.querySelectorAll('[class*="NC_TimeSlot"]');
-                        if (allSlots.length > 1) {
-                            const hasBooked = [...allSlots].some(s =>
-                                s.className.includes('NC_TimeSlot') &&
-                                !s.className.includes('Available')
-                            );
-                            return {
-                                found: true,
-                                depth,
-                                slotCount: allSlots.length,
-                                hasBooked,
-                                blockText: (node.innerText || '').slice(0, 300),
-                            };
-                        }
-                    }
-                    // Fallback: use text heuristic on immediate parent row
-                    const row = el.closest('tr') || el.parentElement;
-                    const text = row ? (row.innerText || row.textContent || '') : '';
-                    // Strip time, tee info, and booking-status words; if names remain → booked
-                    const stripped = text
-                        .replace(/\\d{1,2}:\\d{2}\\s*(AM|PM)/gi, '')
-                        .replace(/\\[(\\d+st|\\d+nd|\\d+rd|\\d+th|1st|18th)\\s*Tee\\]/gi, '')
-                        .replace(/Book Now|Unavailable|\\(\\d+\\)/gi, '')
-                        .replace(/\\s+/g, ' ').trim();
-                    return { found: false, hasBooked: stripped.length > 8, blockText: text.slice(0, 200) };
-                }
-            """)
-            if block_info.get('hasBooked'):
-                log.info(
-                    "Slot %r skipped — already has bookings (depth=%s slotCount=%s): %r",
-                    t, block_info.get('depth'), block_info.get('slotCount'),
-                    block_info.get('blockText', '')[:120],
-                )
-                continue
-            log.info("Slot %r is empty (depth=%s slotCount=%s) — adding",
-                     t, block_info.get('depth'), block_info.get('slotCount'))
-        except Exception as e:
-            log.warning("Could not check existing bookings for slot %r: %s — including anyway", t, e)
+    log.info("Open spots per tee time: %s",
+             {k: v["count"] for k, v in sorted(time_slot_map.items())})
 
+    for t, info in sorted(time_slot_map.items()):
+        count = info["count"]
+        if count < players:
+            log.info(
+                "Slot %r skipped — only %d/%d spots open (partially booked)",
+                t, count, players,
+            )
+            continue
+        log.info("Slot %r has %d open spots — adding to list", t, count)
         slots.append({
             "time": t,
-            "available_spots": 4,
+            "available_spots": count,
             "price_per_player": 0.0,
             "cart_included": False,
-            "_locator_index": i,
+            "_locator_index": info["first_index"],
             "_slot_selector": avail_sel,
         })
 
