@@ -171,60 +171,84 @@ def _login(page: Page) -> None:
     log.info("Logging in as %s ...", username)
     page.goto(LOGIN_URL, wait_until="networkidle", timeout=30_000)
     _screenshot(page, "01_login_page")
+    _log_all_inputs(page)
 
-    filled = _fill_first(
-        page,
-        [
-            'input[type="text"]',
-            '[id*="UserName" i]',
-            '[name*="UserName" i]',
-            '[id*="user" i]',
-            '[name*="user" i]',
-        ],
-        username,
-        "username",
-    )
-    if not filled:
-        _screenshot(page, "01_login_no_username")
-        raise RuntimeError(
-            "Could not find a username field on the login page. "
-            "See debug_screenshots/01_login_no_username*.png"
-        )
-
-    page.locator('input[type="password"]').first.fill(password)
-
-    clicked = _click_first(
-        page,
-        [
-            'input[type="submit"]',
-            'button[type="submit"]',
-            '[id*="Login" i]',
-            '[id*="Submit" i]',
-            '[value*="Login" i]',
-            '[value*="Sign in" i]',
-        ],
-        "login button",
-    )
-    if not clicked:
-        _screenshot(page, "01_login_no_button")
-        raise RuntimeError(
-            "Could not find a login submit button. "
-            "See debug_screenshots/01_login_no_button*.png"
-        )
-
-    page.wait_for_load_state("networkidle", timeout=30_000)
-    _screenshot(page, "02_post_login")
-
-    # Detect login failure via error message or redirect back to login
-    for err_sel in [".error", ".alert-danger", '[class*="error" i]', '[class*="invalid" i]']:
+    # Fill username then password using exact IDs first, generic selectors as fallback
+    for u_sel, p_sel in [
+        ('#masterPageUC_ctl02_ctl00_txtUsername', '#masterPageUC_ctl02_ctl00_txtPassword'),
+        ('input[type="text"]', 'input[type="password"]'),
+    ]:
         try:
-            loc = page.locator(err_sel).first
-            if loc.is_visible():
-                raise RuntimeError(f"Login failed: {loc.text_content()}")
-        except PlaywrightTimeout:
-            pass
+            page.locator(u_sel).first.fill(username)
+            page.locator(p_sel).first.fill(password)
+            log.info("Filled login form via %r", u_sel)
+            break
+        except Exception:
+            continue
 
-    log.info("Login OK — now at: %s", page.url)
+    page.wait_for_timeout(300)
+
+    # Diagnostic: confirm values are in the DOM and doLogin is available
+    pre = page.evaluate("""
+        () => {
+            const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
+                   || document.querySelector('input[type="text"]');
+            const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
+                   || document.querySelector('input[type="password"]');
+            return {
+                usernameLen: u ? u.value.length : -1,
+                passwordLen: p ? p.value.length : -1,
+                doLoginDefined: typeof doLogin !== 'undefined',
+            };
+        }
+    """)
+    log.info("Login pre-submit: username_len=%d password_len=%d doLogin=%s",
+             pre.get('usernameLen', -1), pre.get('passwordLen', -1),
+             pre.get('doLoginDefined'))
+
+    _screenshot(page, "01a_before_login_submit")
+
+    # Call doLogin() directly — same method confirmed working for detecting auth state.
+    # 'p=MembersDefault' is the destination the login form uses on this page.
+    login_result = page.evaluate("""
+        () => {
+            const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
+                   || document.querySelector('input[type="text"]');
+            const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
+                   || document.querySelector('input[type="password"]');
+            if (typeof doLogin !== 'undefined' && u && p && u.value && p.value) {
+                doLogin('p=MembersDefault', 8, '0');
+                return 'doLogin_called';
+            }
+            return 'doLogin_skipped:defined=' + (typeof doLogin !== 'undefined')
+                 + ',ulen=' + (u ? u.value.length : 'missing')
+                 + ',plen=' + (p ? p.value.length : 'missing');
+        }
+    """)
+    log.info("Login doLogin() result: %s", login_result)
+
+    if 'doLogin_skipped' in login_result:
+        # Fallback: click the submit button directly
+        _click_first(page, [
+            '#btnSecureLogin',
+            'input[type="submit"]',
+            '[id*="Login" i]',
+        ], "login button")
+
+    # Wait for the member dashboard to appear (URL changes or content loads)
+    try:
+        page.wait_for_url("*p=MembersDefault*", timeout=15_000)
+    except Exception:
+        page.wait_for_load_state("networkidle", timeout=15_000)
+
+    _screenshot(page, "02_post_login")
+    log.info("After login: %s", page.url)
+
+    # Verify we actually landed on the member area, not back on the login page
+    page_text = page.evaluate("() => document.body.innerText.slice(0, 300)")
+    log.info("Post-login page text: %s", page_text.replace('\n', ' ')[:200])
+    if 'btnSecureLogin' in (page.content() or '') and 'Make a Tee Time' not in (page.content() or ''):
+        log.warning("Login may have failed — still seeing login form after submit")
 
 
 # ---------------------------------------------------------------------------
