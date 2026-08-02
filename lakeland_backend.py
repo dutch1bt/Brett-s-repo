@@ -782,12 +782,6 @@ def _parse_slots(ctx, players: int) -> list[dict]:
     n_avail = available_cells.count()
     log.info("NC_TimeSlotPanelSlotAvailable cells: %d", n_avail)
 
-    # Each open player spot in a tee time gets its own NC_TimeSlotPanelSlotAvailable
-    # cell. A fully empty 4-player tee time therefore has 4 such cells at the same
-    # time; a partially-booked tee time (e.g. 2 already reserved) has only 2.
-    # We count cells per parsed time and only accept times where count >= players.
-    time_slot_map: dict = {}  # "7:30 AM" -> {"count": int, "first_index": int}
-
     for i in range(n_avail):
         cell = available_cells.nth(i)
         time_span = cell.locator("span.timeText").first
@@ -799,36 +793,59 @@ def _parse_slots(ctx, players: int) -> list[dict]:
         if not t:
             log.warning("Available cell %d: could not parse time from %r", i, raw[:60])
             continue
-        if t not in time_slot_map:
-            time_slot_map[t] = {"count": 0, "first_index": i}
-        time_slot_map[t]["count"] += 1
 
-    log.info("Open spots per tee time: %s",
-             {k: v["count"] for k, v in sorted(time_slot_map.items())})
+        # Detect partially-booked slots by walking up the DOM until we find a
+        # container that holds exactly ONE tee time (stopping when a second time
+        # pattern appears). Strip the time, tee label, "Book Now", and count badge
+        # from that container's text — if real text remains, it's player names.
+        try:
+            partial = cell.evaluate(r"""
+                el => {
+                    const timeRe = /\d{1,2}:\d{2}\s*(AM|PM)/gi;
+                    const clean = s => s
+                        .replace(timeRe, '')
+                        .replace(/\[.*?Tee\]/gi, '')
+                        .replace(/Book\s*Now|Unavailable/gi, '')
+                        .replace(/\[\d+\]|\(\d+\)/gi, '')
+                        .replace(/\s+/g, ' ').trim();
 
-    for t, info in sorted(time_slot_map.items()):
-        count = info["count"]
-        if count < players:
-            log.info(
-                "Slot %r skipped — only %d/%d spots open (partially booked)",
-                t, count, players,
-            )
-            continue
-        log.info("Slot %r has %d open spots — adding to list", t, count)
+                    let node = el;
+                    for (let depth = 0; depth < 8; depth++) {
+                        const txt = (node.innerText || node.textContent || '').trim();
+                        const times = txt.match(/\d{1,2}:\d{2}\s*(AM|PM)/gi) || [];
+                        if (times.length > 1) break;  // crossed into adjacent tee time
+                        const stripped = clean(txt);
+                        if (stripped.length > 5) {
+                            return { hasBooked: true, depth, text: stripped.slice(0, 150) };
+                        }
+                        if (!node.parentElement) break;
+                        node = node.parentElement;
+                    }
+                    return { hasBooked: false };
+                }
+            """)
+            if partial.get('hasBooked'):
+                log.info(
+                    "Slot %r skipped — player names at depth %s: %r",
+                    t, partial.get('depth'), partial.get('text', '')[:100],
+                )
+                continue
+            log.info("Slot %r is empty — adding", t)
+        except Exception as e:
+            log.warning("Could not check slot %r for existing players: %s — including anyway", t, e)
+
         slots.append({
             "time": t,
-            "available_spots": count,
+            "available_spots": 4,
             "price_per_player": 0.0,
             "cart_included": False,
-            "_locator_index": info["first_index"],
+            "_locator_index": i,
             "_slot_selector": avail_sel,
         })
 
-    # Fallback: if CSS class approach found nothing, do a broad text scan
-    # (keeps the code working on other platforms or if the class names change).
+    # Fallback: if CSS class approach found nothing, do a broad text scan.
     if not slots:
         log.info("CSS class scan found 0 slots — falling back to table-row text scan")
-        # Log raw text_content of first 5 rows that contain a colon, for diagnosis
         candidates = ctx.locator("table tr")
         row_count = candidates.count()
         log.info("Fallback: scanning %d table rows", row_count)
@@ -844,6 +861,19 @@ def _parse_slots(ctx, players: int) -> list[dict]:
                 continue
             if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
                 continue
+            # Skip blocked/unavailable tee times
+            if re.search(r"\bUnavailable\b", text, re.IGNORECASE):
+                log.info("Fallback: skipping unavailable row at %r", t)
+                continue
+            # Skip partially-booked rows — strip non-player tokens and check for names
+            stripped = re.sub(r"\d{1,2}:\d{2}\s*(AM|PM)", "", text, flags=re.IGNORECASE)
+            stripped = re.sub(r"\[.*?Tee\]", "", stripped, flags=re.IGNORECASE)
+            stripped = re.sub(r"Book\s*Now|Unavailable", "", stripped, flags=re.IGNORECASE)
+            stripped = re.sub(r"\[\d+\]|\(\d+\)", "", stripped)
+            stripped = re.sub(r"\s+", " ", stripped).strip()
+            if len(stripped) > 5:
+                log.info("Fallback: skipping partial row at %r (remaining: %r)", t, stripped[:80])
+                continue
             is_clickable = el.evaluate("""e => {
                 if (e.tagName === 'A' || e.tagName === 'BUTTON') return true;
                 if (e.getAttribute('onclick')) return true;
@@ -853,7 +883,7 @@ def _parse_slots(ctx, players: int) -> list[dict]:
             }""")
             if not is_clickable:
                 continue
-            log.info("Fallback found slot: time=%r text=%r", t, text[:80])
+            log.info("Fallback found empty slot: time=%r text=%r", t, text[:80])
             price_match = re.search(r"\$\s*([\d.]+)", text)
             slots.append({
                 "time": t,
