@@ -231,204 +231,54 @@ def _login(page: Page) -> None:
 # Navigate to the booking page and advance the tee-sheet calendar
 # ---------------------------------------------------------------------------
 
-def _navigate_to_booking_via_menu(page: Page) -> None:
-    """
-    After logging in at LOGIN_URL, navigate to the main club site and use the
-    Golf > Book a Tee Time nav menu to reach the booking page.
-    This avoids the ssid/session mismatch that ssidfail causes.
-    """
-    # Go to the club's main homepage (not the dynamicmodule login URL)
-    page.goto("https://www.lakelandsgolf.com/default.aspx",
-              wait_until="networkidle", timeout=30_000)
-    _screenshot(page, "menu_01_home")
-    log.info("Main site URL: %s", page.url)
-    _log_clickable_elements(page)
-
-    # Golf nav item
-    golf_clicked = _click_first(
-        page,
-        [
-            'a:has-text("Golf")',
-            'nav a:text-matches("^Golf$", "i")',
-            'li a:text-matches("^Golf$", "i")',
-            'a:text-matches("^Golf$", "i")',
-        ],
-        "Golf menu item",
-    )
-    if golf_clicked:
-        page.wait_for_timeout(600)
-        _screenshot(page, "menu_02_golf_menu")
-
-    # Book a Tee Time link
-    _click_first(
-        page,
-        [
-            'a:has-text("Book a Tee Time")',
-            'a:text-matches("book.*tee", "i")',
-            'a:text-matches("tee.*time", "i")',
-            'a[href*="pageid=125"]',
-            'a[href*="booking"]',
-        ],
-        "Book a Tee Time link",
-    )
-    page.wait_for_load_state("networkidle", timeout=30_000)
-    _screenshot(page, "menu_03_booking")
-    log.info("After menu nav: %s", page.url)
-
 
 def _open_booking_for(page: Page, date: str, players: int):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
 
-    The Lakelands site uses separate session tokens per sub-system (ssid).
-    Logging in via LOGIN_URL establishes ssid=100033 but NOT ssid=100178 (booking).
-    When we navigate to BOOKING_URL unauthenticated, the server redirects to a
-    second login page (?p=home&e=6&ssidfail=true) that has doLogin(...pageid=125...)
-    baked into its submit button. Logging in *there* lands us directly on the
-    booking page — no separate pre-login needed.
+    Flow: login via LOGIN_URL (ssid=100033) → click "MAKE A TEE TIME" link on
+    the member portal → server transfers session to ssid=100178 booking page.
+    This mirrors exactly what a human does and avoids the ssidfail auth dance.
 
     Returns the Frame or Page that contains the tee-sheet content.
     """
     log.info("Opening booking page for %s ...", date)
-    username, password = _credentials()
 
-    # Navigate directly to the booking URL (unauthenticated is fine — it will
-    # redirect us to the ssidfail login page for the booking sub-system).
-    page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-    _screenshot(page, "03_booking_goto")
-    _log_frames(page)
-    log.info("After goto BOOKING_URL: %s", page.url)
+    # Step 1: login to the member portal (ssid=100033).
+    _login(page)
+    _screenshot(page, "03_post_login_portal")
+    _log_clickable_elements(page)
 
-    # If we were redirected to the ssidfail/login page, fill credentials there.
-    # The submit button calls doLogin('p=dynamicmodule&pageid=125&...') which
-    # should redirect us to the booking page on success.
-    if any(kw in page.url for kw in ["ssidfail", "pageid=9", "login", "e=6"]) \
-            or "pageid=125" not in page.url:
-        log.info("Not on booking page — logging in via ssidfail form")
-        _dump_html(page, "03_ssidfail_login_page")
-        _log_all_inputs(page)
-
-        # Fill using exact field IDs (confirmed from page inspection)
-        # then fall back to generic selectors.
-        for u_sel, p_sel in [
-            ('#masterPageUC_ctl02_ctl00_txtUsername',
-             '#masterPageUC_ctl02_ctl00_txtPassword'),
-            ('input[type="text"]', 'input[type="password"]'),
-        ]:
-            try:
-                page.locator(u_sel).first.fill(username)
-                page.locator(p_sel).first.fill(password)
-                log.info("Filled credentials via %r", u_sel)
-                break
-            except Exception:
-                continue
-
-        page.wait_for_timeout(400)
-
-        # Diagnostic: confirm the values made it into the DOM
-        pre = page.evaluate("""
-            () => {
-                const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
-                       || document.querySelector('input[type="text"]');
-                const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
-                       || document.querySelector('input[type="password"]');
-                const vs = document.getElementById('__VIEWSTATE');
-                return {
-                    usernameLen: u ? u.value.length : -1,
-                    passwordLen: p ? p.value.length : -1,
-                    doLoginDefined: typeof doLogin !== 'undefined',
-                    viewstateLen: vs ? vs.value.length : 0,
-                    formAction: document.forms[0] ? document.forms[0].action : 'NONE',
-                };
-            }
-        """)
-        log.info("Pre-submit state: username_len=%d password_len=%d "
-                 "doLogin=%s viewstate_len=%d form_action=%s",
-                 pre.get('usernameLen', -1), pre.get('passwordLen', -1),
-                 pre.get('doLoginDefined'), pre.get('viewstateLen', 0),
-                 pre.get('formAction', '?')[:120])
-
-        _screenshot(page, "03a_before_login_click")
-
-        # Strategy 1: call doLogin() directly in-browser (avoids click-event timing issues)
-        login_js = page.evaluate("""
-            () => {
-                const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
-                       || document.querySelector('input[type="text"]');
-                const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
-                       || document.querySelector('input[type="password"]');
-                if (typeof doLogin !== 'undefined' && u && p && u.value && p.value) {
-                    doLogin('p=dynamicmodule&pageid=125&tt=booking&ssid=100178&vnf=1', 8, '0');
-                    return 'doLogin_called';
-                }
-                return 'doLogin_skipped:defined=' + (typeof doLogin !== 'undefined')
-                     + ',ulen=' + (u ? u.value.length : 'missing')
-                     + ',plen=' + (p ? p.value.length : 'missing');
-            }
-        """)
-        log.info("doLogin() JS result: %s", login_js)
-
-        if 'doLogin_skipped' in login_js:
-            # Strategy 2: direct form POST via fetch(), bypassing doLogin()
-            log.info("doLogin unavailable — attempting direct form POST via fetch()")
-            fetch_result = page.evaluate("""
-                async ([u, p]) => {
-                    const vs  = document.getElementById('__VIEWSTATE')?.value || '';
-                    const cvs = document.getElementById('__CEVIEWSTATE')?.value || '';
-                    const body = new URLSearchParams({
-                        'masterPageUC$ctl02$ctl00$txtUsername': u,
-                        'masterPageUC$ctl02$ctl00$txtPassword': p,
-                        '__VIEWSTATE': vs,
-                        '__CEVIEWSTATE': cvs,
-                        '__EVENTTARGET': '',
-                        '__EVENTARGUMENT': '',
-                        'masterPageUC$ctl02$ctl00$persistLoginBtn': 'login',
-                    });
-                    try {
-                        const resp = await fetch(window.location.href, {
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                            body: body.toString(),
-                            redirect: 'follow',
-                        });
-                        return {ok: resp.ok, status: resp.status, url: resp.url};
-                    } catch(e) {
-                        return {ok: false, error: String(e)};
-                    }
-                }
-            """, [username, password])
-            log.info("Direct form POST result: %s", fetch_result)
-            if fetch_result.get('ok') and 'pageid=125' in (fetch_result.get('url') or ''):
-                log.info("Direct form POST succeeded — navigating to booking URL")
-                page.goto(fetch_result['url'], wait_until="networkidle", timeout=30_000)
-
-        # Wait for the URL to change to the booking page (up to 20s)
+    # Step 2: click "MAKE A TEE TIME" on the portal page — this is the same
+    # link the human clicks, and it carries the ssid=100033 session into the
+    # booking sub-system (ssid=100178) without triggering ssidfail.
+    tee_time_link_selectors = [
+        'a:has-text("Make a Tee Time")',
+        'a:text-matches("make.*tee.*time", "i")',
+        'a:text-matches("book.*tee.*time", "i")',
+        'a:text-matches("tee.*time", "i")',
+        'a[href*="pageid=125"]',
+        'a[href*="ssid=100178"]',
+        'a[href*="booking"]',
+    ]
+    clicked = _click_first(page, tee_time_link_selectors, "Make a Tee Time link")
+    if clicked:
+        log.info("Clicked 'Make a Tee Time' link — waiting for booking page...")
         try:
             page.wait_for_url("*pageid=125*", timeout=20_000)
-            log.info("Navigated to booking page: %s", page.url)
         except Exception:
             page.wait_for_load_state("networkidle", timeout=15_000)
-            log.info("After login click: %s", page.url)
+        log.info("After tee time link click: %s", page.url)
+        _screenshot(page, "03b_after_tee_time_link")
+    else:
+        log.warning("Could not find 'Make a Tee Time' link — falling back to direct BOOKING_URL nav")
 
-        _screenshot(page, "03b_after_ssidfail_login")
-
-        # If we're not on the booking page yet, navigate there directly.
-        # The form login may have landed us on the member home page (p=home&E=1)
-        # which means the session IS established — we just need to go to BOOKING_URL.
-        if "pageid=125" not in page.url:
-            log.info("Login landed elsewhere — navigating directly to BOOKING_URL...")
-            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-            _screenshot(page, "03b2_direct_booking_nav")
-            log.info("After direct booking nav: %s", page.url)
-
-        # Final fallback: full re-login via LOGIN_URL then direct booking nav
-        if "pageid=125" not in page.url:
-            log.warning("Direct nav failed — falling back to LOGIN_URL re-login")
-            _login(page)
-            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-            _screenshot(page, "03b3_after_relogin_nav")
-            log.info("After re-login + direct nav: %s", page.url)
+    # Step 3: if we're still not on the booking page, go there directly.
+    if "pageid=125" not in page.url:
+        log.info("Not on booking page — navigating directly to BOOKING_URL")
+        page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+        _screenshot(page, "03c_direct_booking_nav")
+        log.info("After direct booking nav: %s", page.url)
 
     log.info("Booking page URL: %s", page.url)
     _screenshot(page, "03c_booking_page")
