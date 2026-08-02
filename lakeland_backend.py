@@ -794,7 +794,58 @@ def _parse_slots(ctx, players: int) -> list[dict]:
         if not t:
             log.warning("Available cell %d: could not parse time from %r", i, raw[:60])
             continue
-        log.info("Found available slot %d: time=%r", i, t)
+
+        # Skip partially-booked slots — only book into completely empty tee times.
+        # NC_TimeSlotPanelSlotAvailable marks ANY slot with open spots, including ones
+        # where other players are already booked. Walk up the DOM to find the tee-time
+        # block container and check if it has any existing bookings alongside this slot.
+        try:
+            block_info = cell.evaluate("""
+                el => {
+                    // Walk up looking for a container that owns multiple NC_TimeSlot elements
+                    let node = el;
+                    for (let depth = 0; depth < 8; depth++) {
+                        if (!node.parentElement) break;
+                        node = node.parentElement;
+                        const allSlots = node.querySelectorAll('[class*="NC_TimeSlot"]');
+                        if (allSlots.length > 1) {
+                            const hasBooked = [...allSlots].some(s =>
+                                s.className.includes('NC_TimeSlot') &&
+                                !s.className.includes('Available')
+                            );
+                            return {
+                                found: true,
+                                depth,
+                                slotCount: allSlots.length,
+                                hasBooked,
+                                blockText: (node.innerText || '').slice(0, 300),
+                            };
+                        }
+                    }
+                    // Fallback: use text heuristic on immediate parent row
+                    const row = el.closest('tr') || el.parentElement;
+                    const text = row ? (row.innerText || row.textContent || '') : '';
+                    // Strip time, tee info, and booking-status words; if names remain → booked
+                    const stripped = text
+                        .replace(/\\d{1,2}:\\d{2}\\s*(AM|PM)/gi, '')
+                        .replace(/\\[(\\d+st|\\d+nd|\\d+rd|\\d+th|1st|18th)\\s*Tee\\]/gi, '')
+                        .replace(/Book Now|Unavailable|\\(\\d+\\)/gi, '')
+                        .replace(/\\s+/g, ' ').trim();
+                    return { found: false, hasBooked: stripped.length > 8, blockText: text.slice(0, 200) };
+                }
+            """)
+            if block_info.get('hasBooked'):
+                log.info(
+                    "Slot %r skipped — already has bookings (depth=%s slotCount=%s): %r",
+                    t, block_info.get('depth'), block_info.get('slotCount'),
+                    block_info.get('blockText', '')[:120],
+                )
+                continue
+            log.info("Slot %r is empty (depth=%s slotCount=%s) — adding",
+                     t, block_info.get('depth'), block_info.get('slotCount'))
+        except Exception as e:
+            log.warning("Could not check existing bookings for slot %r: %s — including anyway", t, e)
+
         slots.append({
             "time": t,
             "available_spots": 4,
