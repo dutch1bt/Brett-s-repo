@@ -308,53 +308,100 @@ def _open_booking_for(page: Page, date: str, players: int):
         _dump_html(page, "03_ssidfail_login_page")
         _log_all_inputs(page)
 
-        # Use JavaScript to fill the form fields AND dispatch the DOM events
-        # that doLogin() checks before reading values. Playwright's fill()
-        # alone may not fire all the events the ASP.NET form expects.
-        page.evaluate(
-            """
-            ([u, p]) => {
-                const vis = el => el.offsetParent !== null;
-                const fire = (el, val) => {
-                    el.focus();
-                    el.value = val;
-                    ['input','change','blur'].forEach(evt =>
-                        el.dispatchEvent(new Event(evt, {bubbles: true})));
-                };
-                const texts = [...document.querySelectorAll('input[type="text"]')].filter(vis);
-                const pws   = [...document.querySelectorAll('input[type="password"]')].filter(vis);
-                if (texts.length) fire(texts[0], u);
-                if (pws.length)   fire(pws[0],   p);
-            }
-            """,
-            [username, password],
-        )
-        # Belt-and-suspenders: also use Playwright's native fill so the
-        # accessibility tree reflects the values
-        try:
-            page.locator('input[type="text"]').first.fill(username)
-        except Exception:
-            pass
-        try:
-            page.locator('input[type="password"]').first.fill(password)
-        except Exception:
-            pass
+        # Fill using exact field IDs (confirmed from page inspection)
+        # then fall back to generic selectors.
+        for u_sel, p_sel in [
+            ('#masterPageUC_ctl02_ctl00_txtUsername',
+             '#masterPageUC_ctl02_ctl00_txtPassword'),
+            ('input[type="text"]', 'input[type="password"]'),
+        ]:
+            try:
+                page.locator(u_sel).first.fill(username)
+                page.locator(p_sel).first.fill(password)
+                log.info("Filled credentials via %r", u_sel)
+                break
+            except Exception:
+                continue
 
-        page.wait_for_timeout(600)  # let the form settle before clicking
+        page.wait_for_timeout(400)
+
+        # Diagnostic: confirm the values made it into the DOM
+        pre = page.evaluate("""
+            () => {
+                const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
+                       || document.querySelector('input[type="text"]');
+                const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
+                       || document.querySelector('input[type="password"]');
+                const vs = document.getElementById('__VIEWSTATE');
+                return {
+                    usernameLen: u ? u.value.length : -1,
+                    passwordLen: p ? p.value.length : -1,
+                    doLoginDefined: typeof doLogin !== 'undefined',
+                    viewstateLen: vs ? vs.value.length : 0,
+                    formAction: document.forms[0] ? document.forms[0].action : 'NONE',
+                };
+            }
+        """)
+        log.info("Pre-submit state: username_len=%d password_len=%d "
+                 "doLogin=%s viewstate_len=%d form_action=%s",
+                 pre.get('usernameLen', -1), pre.get('passwordLen', -1),
+                 pre.get('doLoginDefined'), pre.get('viewstateLen', 0),
+                 pre.get('formAction', '?')[:120])
+
         _screenshot(page, "03a_before_login_click")
 
-        _click_first(
-            page,
-            [
-                '#btnSecureLogin',
-                '[id*="SecureLogin" i]',
-                'input[value*="Sign In" i]',
-                '[onclick*="doLogin" i]',
-                'input[type="submit"]',
-                'button[type="submit"]',
-            ],
-            "sign-in button on ssidfail page",
-        )
+        # Strategy 1: call doLogin() directly in-browser (avoids click-event timing issues)
+        login_js = page.evaluate("""
+            () => {
+                const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
+                       || document.querySelector('input[type="text"]');
+                const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
+                       || document.querySelector('input[type="password"]');
+                if (typeof doLogin !== 'undefined' && u && p && u.value && p.value) {
+                    doLogin('p=dynamicmodule&pageid=125&tt=booking&ssid=100178&vnf=1', 8, '0');
+                    return 'doLogin_called';
+                }
+                return 'doLogin_skipped:defined=' + (typeof doLogin !== 'undefined')
+                     + ',ulen=' + (u ? u.value.length : 'missing')
+                     + ',plen=' + (p ? p.value.length : 'missing');
+            }
+        """)
+        log.info("doLogin() JS result: %s", login_js)
+
+        if 'doLogin_skipped' in login_js:
+            # Strategy 2: direct form POST via fetch(), bypassing doLogin()
+            log.info("doLogin unavailable — attempting direct form POST via fetch()")
+            fetch_result = page.evaluate("""
+                async ([u, p]) => {
+                    const vs  = document.getElementById('__VIEWSTATE')?.value || '';
+                    const cvs = document.getElementById('__CEVIEWSTATE')?.value || '';
+                    const body = new URLSearchParams({
+                        'masterPageUC$ctl02$ctl00$txtUsername': u,
+                        'masterPageUC$ctl02$ctl00$txtPassword': p,
+                        '__VIEWSTATE': vs,
+                        '__CEVIEWSTATE': cvs,
+                        '__EVENTTARGET': '',
+                        '__EVENTARGUMENT': '',
+                        'masterPageUC$ctl02$ctl00$persistLoginBtn': 'login',
+                    });
+                    try {
+                        const resp = await fetch(window.location.href, {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                            body: body.toString(),
+                            redirect: 'follow',
+                        });
+                        return {ok: resp.ok, status: resp.status, url: resp.url};
+                    } catch(e) {
+                        return {ok: false, error: String(e)};
+                    }
+                }
+            """, [username, password])
+            log.info("Direct form POST result: %s", fetch_result)
+            if fetch_result.get('ok') and 'pageid=125' in (fetch_result.get('url') or ''):
+                log.info("Direct form POST succeeded — navigating to booking URL")
+                page.goto(fetch_result['url'], wait_until="networkidle", timeout=30_000)
 
         # Wait for the URL to change to the booking page (up to 20s)
         try:
