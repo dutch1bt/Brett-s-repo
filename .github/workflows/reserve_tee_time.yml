@@ -93,7 +93,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Send SMS notification
-        if: false  # temporarily disabled for testing — re-enable when done
+        if: always()
         env:
           PHONE: ${{ secrets.PHONE_NUMBER }}
           GROUP_PHONES: ${{ secrets.GROUP_PHONE_NUMBERS }}
