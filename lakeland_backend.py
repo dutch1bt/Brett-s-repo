@@ -362,16 +362,26 @@ def _open_booking_for(page: Page, date: str, players: int):
             log.info("Navigated to booking page: %s", page.url)
         except Exception:
             page.wait_for_load_state("networkidle", timeout=15_000)
-            log.info("After login click (no pageid=125 redirect): %s", page.url)
+            log.info("After login click: %s", page.url)
 
         _screenshot(page, "03b_after_ssidfail_login")
 
-        # If still not on the booking page, fall back to LOGIN_URL + menu nav
+        # If we're not on the booking page yet, navigate there directly.
+        # The form login may have landed us on the member home page (p=home&E=1)
+        # which means the session IS established — we just need to go to BOOKING_URL.
         if "pageid=125" not in page.url:
-            log.warning("ssidfail login did not reach booking page — "
-                        "falling back to LOGIN_URL + Golf menu navigation")
+            log.info("Login landed elsewhere — navigating directly to BOOKING_URL...")
+            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+            _screenshot(page, "03b2_direct_booking_nav")
+            log.info("After direct booking nav: %s", page.url)
+
+        # Final fallback: full re-login via LOGIN_URL then direct booking nav
+        if "pageid=125" not in page.url:
+            log.warning("Direct nav failed — falling back to LOGIN_URL re-login")
             _login(page)
-            _navigate_to_booking_via_menu(page)
+            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+            _screenshot(page, "03b3_after_relogin_nav")
+            log.info("After re-login + direct nav: %s", page.url)
 
     log.info("Booking page URL: %s", page.url)
     _screenshot(page, "03c_booking_page")
