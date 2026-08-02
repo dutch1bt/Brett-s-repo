@@ -804,8 +804,9 @@ def _parse_slots(ctx, players: int) -> list[dict]:
                     const timeRe = /\d{1,2}:\d{2}\s*(AM|PM)/gi;
                     const clean = s => s
                         .replace(timeRe, '')
+                        .replace(/\b\d+(?:st|nd|rd|th)\s+TEE\b/gi, '')
                         .replace(/\[.*?Tee\]/gi, '')
-                        .replace(/Book\s*Now|Unavailable/gi, '')
+                        .replace(/\b(?:Book\s*Now|Unavailable|Request|Reserved|Reserve|Event|Edit|View\s*Registrants|JOIN)\b/gi, '')
                         .replace(/\[\d+\]|\(\d+\)/gi, '')
                         .replace(/\s+/g, ' ').trim();
 
@@ -867,8 +868,9 @@ def _parse_slots(ctx, players: int) -> list[dict]:
                 continue
             # Skip partially-booked rows — strip non-player tokens and check for names
             stripped = re.sub(r"\d{1,2}:\d{2}\s*(AM|PM)", "", text, flags=re.IGNORECASE)
+            stripped = re.sub(r"\b\d+(?:st|nd|rd|th)\s+TEE\b", "", stripped, flags=re.IGNORECASE)
             stripped = re.sub(r"\[.*?Tee\]", "", stripped, flags=re.IGNORECASE)
-            stripped = re.sub(r"Book\s*Now|Unavailable", "", stripped, flags=re.IGNORECASE)
+            stripped = re.sub(r"\b(?:Book\s*Now|Unavailable|Request|Reserved|Reserve|Event|Edit|View\s*Registrants|JOIN)\b", "", stripped, flags=re.IGNORECASE)
             stripped = re.sub(r"\[\d+\]|\(\d+\)", "", stripped)
             stripped = re.sub(r"\s+", " ", stripped).strip()
             if len(stripped) > 5:
