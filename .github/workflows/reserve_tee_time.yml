@@ -2,12 +2,12 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 08:00 UTC (4:00 AM EDT / 3:00 AM EST).
+    # Fire at 07:00 UTC (3:00 AM EDT / 2:00 AM EST).
     # GitHub cron routinely runs 90-120 min late on Sunday mornings.
-    # Starting at 08:00 UTC gives up to a 3.5 hour buffer before the
-    # 7:29 AM Eastern trigger. The "Wait" step sleeps until exactly
-    # 7:29 AM America/Toronto regardless of when the job actually starts.
-    - cron: '0 8 * * 0'
+    # Starting at 07:00 UTC gives up to a 3.5 hour buffer before the
+    # 6:29 AM Eastern trigger. The "Wait" step sleeps until exactly
+    # 6:29 AM America/Toronto regardless of when the job actually starts.
+    - cron: '0 7 * * 0'
   workflow_dispatch:
     inputs:
       date:
@@ -42,24 +42,24 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 7:30 AM Eastern
+      - name: Wait until 6:30 AM Eastern
         if: github.event_name == 'schedule'
         run: |
-          # Compute 7:30 AM America/Toronto (handles EDT and EST automatically).
+          # Compute 6:30 AM America/Toronto (handles EDT and EST automatically).
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=7, minute=29, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=6, minute=29, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 7:29 AM Eastern..."
+            echo "Waiting ${DIFF}s until 6:29 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 7:29 AM Eastern (diff=${DIFF}s) — booking immediately."
+            echo "Already past 6:29 AM Eastern (diff=${DIFF}s) — booking immediately."
           fi
 
       - name: Book tee time
