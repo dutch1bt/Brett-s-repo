@@ -42,24 +42,26 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 6:30 AM Eastern
+      - name: Wait until 6:10 AM Eastern
         if: github.event_name == 'schedule'
         run: |
-          # Compute 6:30 AM America/Toronto (handles EDT and EST automatically).
+          # Wake at 6:10 AM so the browser can pre-warm (login + navigate) before
+          # the 6:30 AM booking window opens. The Python script then sleeps internally
+          # until 06:30:00 and fires changeDate() at the exact open moment.
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=6, minute=29, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=6, minute=10, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 6:29 AM Eastern..."
+            echo "Waiting ${DIFF}s until 6:10 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 6:29 AM Eastern (diff=${DIFF}s) — booking immediately."
+            echo "Already past 6:10 AM Eastern (diff=${DIFF}s) — continuing."
           fi
 
       - name: Book tee time
@@ -71,6 +73,7 @@ jobs:
           AUTO_RESERVE_PLAYERS: ${{ secrets.AUTO_RESERVE_PLAYERS }}
           AUTO_RESERVE_PLAYER_NAMES: ${{ secrets.AUTO_RESERVE_PLAYER_NAMES }}
           AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
+          AUTO_RESERVE_BOOKING_OPEN_TIME: '06:30:00'
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.date }}" ]; then

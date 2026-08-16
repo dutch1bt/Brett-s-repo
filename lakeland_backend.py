@@ -1402,6 +1402,63 @@ def make_reservation(
         page = browser.new_page()
         try:
             ctx = _open_booking_for(page, date, players)
+
+            # ------------------------------------------------------------------
+            # Pre-warm: when AUTO_RESERVE_BOOKING_OPEN_TIME is set the script
+            # started early (browser is ready but booking isn't open yet).
+            # Sleep here until the exact open moment, then fire a JS changeDate()
+            # to refresh the tee sheet — slots appear instantly and we click
+            # Reserve within seconds of 6:30:00, beating manual bookers.
+            # ------------------------------------------------------------------
+            booking_open_env = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
+            if booking_open_env:
+                import time as _time
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/Toronto")
+                now = datetime.now(tz)
+                h_o, m_o, s_o = (int(x) for x in booking_open_env.split(":"))
+                open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
+                diff = (open_dt - now).total_seconds()
+                if diff > 1:
+                    log.info(
+                        "Pre-warm: browser ready at %s — sleeping %.0fs until %s Eastern",
+                        now.strftime("%H:%M:%S"), diff, booking_open_env,
+                    )
+                    _time.sleep(diff)
+                log.info(
+                    "Pre-warm: FIRING at %s Eastern",
+                    datetime.now(tz).strftime("%H:%M:%S"),
+                )
+                tgt = datetime.strptime(date, "%Y-%m-%d")
+                js_date = f"{tgt.month}/{tgt.day}/{tgt.year}"
+                try:
+                    fired = ctx.evaluate(f"""
+                        () => {{
+                            if (typeof changeDate !== 'undefined') {{
+                                changeDate('{js_date}'); return 'ok';
+                            }}
+                            return null;
+                        }}
+                    """)
+                except Exception:
+                    fired = None
+                if fired:
+                    ctx.wait_for_timeout(3000)
+                    try:
+                        ctx.wait_for_load_state("networkidle", timeout=10_000)
+                    except Exception:
+                        pass
+                else:
+                    # changeDate() not available — reload and re-navigate
+                    log.info("changeDate() not found — reloading page and re-navigating")
+                    try:
+                        page.reload(wait_until="networkidle", timeout=20_000)
+                    except Exception:
+                        pass
+                    ctx = _find_booking_frame(page)
+                    _navigate_teesheet_to(ctx, tgt)
+                log.info("Pre-warm complete — tee sheet refreshed, parsing slots NOW")
+
             slots = _parse_slots(ctx, players)
 
             # Find the slot matching the requested time
@@ -1538,6 +1595,7 @@ def make_reservation(
             return {
                 "success": True,
                 "confirmation_number": conf_number,
+                "time": time,
                 "message": (
                     f"Tee time reserved: {players} player(s) on {date} at {time}. "
                     f"Players: {', '.join(player_names)}. "

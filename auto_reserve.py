@@ -61,6 +61,11 @@ PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
 MIN_TIME: str = os.getenv("AUTO_RESERVE_MIN_TIME", "")
 MAX_TIME: str = os.getenv("AUTO_RESERVE_MAX_TIME", "")
 
+# Pre-warm: when set (e.g. "06:30:00"), skip the fetch session and let
+# make_reservation() sleep internally until this time, then fire instantly.
+# The booking window time in America/Toronto, 24-hour HH:MM:SS format.
+BOOKING_OPEN_TIME: str = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
+
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
 # ---------------------------------------------------------------------------
@@ -180,8 +185,40 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
 
     log.info("Target date: %s", date)
 
-    # 2. Fetch available slots — retry for up to 90 s so we catch the exact
-    #    moment the booking window opens (script starts at 7:29, window at 7:30).
+    # 2a. Pre-warm fast path: browser was pre-loaded before the booking window
+    #     opened; make_reservation() will sleep internally until the open time
+    #     and fire immediately — no separate fetch session needed.
+    if BOOKING_OPEN_TIME and not dry_run:
+        slot_time = time_preference or PREFERRED_TIME
+        log.info(
+            "Pre-warm mode (opens %s Eastern) — skipping fetch, booking %s directly",
+            BOOKING_OPEN_TIME, slot_time,
+        )
+        result = golf_agent._make_reservation(
+            date=date,
+            time=slot_time,
+            players=PLAYERS,
+            player_names=PLAYER_NAMES,
+            member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
+        )
+        if result.get("success"):
+            booked_time = result.get("time", slot_time)
+            log.info("SUCCESS — %s", result["message"])
+            log.info("Confirmation number: %s", result["confirmation_number"])
+            import json
+            with open("booking_result.json", "w") as f:
+                json.dump({
+                    "date": date,
+                    "time": booked_time,
+                    "confirmation": result["confirmation_number"],
+                    "players": PLAYER_NAMES,
+                }, f)
+        else:
+            log.error("Reservation FAILED: %s", result.get("message", "unknown error"))
+        return 0 if result.get("success") else 1
+
+    # 2b. Normal path: fetch available slots, pick the best, then reserve.
+    #     Retries for up to 90 s so we catch the moment the booking window opens.
     slots = []
     for attempt in range(7):
         slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
@@ -225,6 +262,7 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
     )
 
     if result.get("success"):
+        booked_time = result.get("time", slot["time"])
         log.info("SUCCESS — %s", result["message"])
         log.info("Confirmation number: %s", result["confirmation_number"])
         # Write booking details for the SMS step to read
@@ -232,7 +270,7 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
         with open("booking_result.json", "w") as f:
             json.dump({
                 "date": date,
-                "time": slot["time"],
+                "time": booked_time,
                 "confirmation": result["confirmation_number"],
                 "players": PLAYER_NAMES,
             }, f)
