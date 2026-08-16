@@ -1409,14 +1409,36 @@ def make_reservation(
                 (s for s in slots if s["time"].upper() == time.upper()), None
             )
             if not target:
-                available = [s["time"] for s in slots]
-                return {
-                    "success": False,
-                    "message": (
-                        f"Time {time} not found in available slots. "
-                        f"Available: {available}"
-                    ),
-                }
+                # Exact match not available — fall back to earliest slot at or after the
+                # requested time (mirrors pick_slot() in auto_reserve.py).
+                def _mins(t: str) -> int:
+                    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)", t.strip(), re.IGNORECASE)
+                    if not m:
+                        return 0
+                    h, mn, ap = int(m.group(1)), int(m.group(2)), m.group(3).upper()
+                    if ap == "PM" and h != 12:
+                        h += 12
+                    elif ap == "AM" and h == 12:
+                        h = 0
+                    return h * 60 + mn
+
+                req_mins = _mins(time)
+                later = [s for s in slots if _mins(s["time"]) >= req_mins]
+                target = later[0] if later else (slots[0] if slots else None)
+                if not target:
+                    available = [s["time"] for s in slots]
+                    return {
+                        "success": False,
+                        "message": (
+                            f"Time {time} not found in available slots. "
+                            f"Available: {available}"
+                        ),
+                    }
+                log.warning(
+                    "Exact time %r not available — falling back to next slot: %r",
+                    time, target["time"],
+                )
+                time = target["time"]
 
             # Re-locate the slot's time cell, then navigate up to the parent <tr>
             # and find the "Reserve" control among the sibling cells.
