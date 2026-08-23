@@ -1426,10 +1426,14 @@ def make_reservation(
 
             # ------------------------------------------------------------------
             # Pre-warm: when AUTO_RESERVE_BOOKING_OPEN_TIME is set the script
-            # started early (browser is ready but booking isn't open yet).
-            # Sleep here until the exact open moment, then fire a JS changeDate()
-            # to refresh the tee sheet — slots appear instantly and we click
-            # Reserve within seconds of 6:30:00, beating manual bookers.
+            # started early. Strategy:
+            #   1. Sleep until 15s before the booking window opens.
+            #   2. Call changeDate() to pre-navigate to the target date — the
+            #      tee sheet loads showing all slots as Unavailable.
+            #   3. Use wait_for_selector() (Playwright mutation observer) to
+            #      block until NC_TimeSlotPanelSlotAvailable appears in the DOM.
+            #      This reacts within milliseconds of the server releasing slots,
+            #      faster than any page reload or human click.
             # ------------------------------------------------------------------
             booking_open_env = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
             if booking_open_env:
@@ -1439,46 +1443,66 @@ def make_reservation(
                 now = datetime.now(tz)
                 h_o, m_o, s_o = (int(x) for x in booking_open_env.split(":"))
                 open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
-                diff = (open_dt - now).total_seconds()
-                if diff > 1:
+
+                # Step 1: sleep until 15s before open
+                pre_sleep = (open_dt - now).total_seconds() - 15
+                if pre_sleep > 1:
                     log.info(
-                        "Pre-warm: browser ready at %s — sleeping %.0fs until %s Eastern",
-                        now.strftime("%H:%M:%S"), diff, booking_open_env,
+                        "Pre-warm: browser ready at %s — sleeping %.0fs until 15s before open",
+                        now.strftime("%H:%M:%S"), pre_sleep,
                     )
-                    _time.sleep(diff)
-                log.info(
-                    "Pre-warm: FIRING at %s Eastern",
-                    datetime.now(tz).strftime("%H:%M:%S"),
-                )
+                    _time.sleep(pre_sleep)
+
+                # Step 2: pre-navigate to the target date
                 tgt = datetime.strptime(date, "%Y-%m-%d")
                 js_date = f"{tgt.month}/{tgt.day}/{tgt.year}"
+                log.info(
+                    "Pre-warm: pre-navigating to %s at %s Eastern...",
+                    date, datetime.now(tz).strftime("%H:%M:%S"),
+                )
                 try:
                     fired = ctx.evaluate(f"""
                         () => {{
                             if (typeof changeDate !== 'undefined') {{
-                                changeDate('{js_date}'); return 'ok';
+                                changeDate('{js_date}'); return true;
                             }}
-                            return null;
+                            return false;
                         }}
                     """)
+                    if fired:
+                        ctx.wait_for_timeout(3500)
+                    else:
+                        _navigate_teesheet_to(ctx, tgt)
+                except Exception as e:
+                    log.warning("Pre-navigate failed: %s — using _navigate_teesheet_to fallback", e)
+                    _navigate_teesheet_to(ctx, tgt)
+
+                # Step 3: watch the DOM with a mutation observer until the first
+                # available slot appears — fires within ~100ms of the server opening
+                # the booking window, faster than any reload or manual click.
+                log.info(
+                    "Pre-warm: DOM watch armed at %s Eastern — waiting for slots...",
+                    datetime.now(tz).strftime("%H:%M:%S"),
+                )
+                try:
+                    ctx.wait_for_selector(
+                        "td[class*='NC_TimeSlotPanelSlotAvailable']",
+                        state="attached",
+                        timeout=45_000,
+                    )
+                    log.info(
+                        "PRE-WARM FIRE: slots live at %s Eastern — booking NOW",
+                        datetime.now(tz).strftime("%H:%M:%S.%f")[:-3],
+                    )
                 except Exception:
-                    fired = None
-                if fired:
-                    ctx.wait_for_timeout(3000)
-                    try:
-                        ctx.wait_for_load_state("networkidle", timeout=10_000)
-                    except Exception:
-                        pass
-                else:
-                    # changeDate() not available — reload and re-navigate
-                    log.info("changeDate() not found — reloading page and re-navigating")
+                    log.warning("wait_for_selector timed out — reloading as fallback")
                     try:
                         page.reload(wait_until="networkidle", timeout=20_000)
                     except Exception:
                         pass
                     ctx = _find_booking_frame(page)
                     _navigate_teesheet_to(ctx, tgt)
-                log.info("Pre-warm complete — tee sheet refreshed, parsing slots NOW")
+                log.info("Pre-warm complete — parsing slots NOW")
 
             slots = _parse_slots(ctx, players)
 
