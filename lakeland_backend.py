@@ -1101,6 +1101,26 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
     except Exception as e:
         log.warning("Modal diagnostic failed: %s", e)
 
+    # --- Dismiss any notice/error overlay before touching the form ---
+    # The site shows a "Notice" popup (e.g. "Another member is currently holding
+    # this tee time") that must be dismissed before any form fields can be
+    # interacted with — clicks on dropdowns go to the overlay otherwise.
+    try:
+        ok_sel = (
+            "#ctl00_ctrl_MakeTeeTime_MakeChangesBtn, "
+            "[onclick*='hideError'], "
+            "a:has-text('OK')"
+        )
+        ok_btn = ctx.locator(ok_sel).first
+        if ok_btn.count() and ok_btn.is_visible():
+            ok_btn.click()
+            log.info("Dismissed booking modal notice overlay (clicked OK)")
+            page.wait_for_timeout(800)
+        else:
+            log.info("No notice overlay to dismiss")
+    except Exception as e:
+        log.debug("Notice dismiss check failed: %s", e)
+
     # --- Set P1 (Brett) transport to "Cart Lease" ---
     # P1 name is auto-filled by the site; we need to fix the transport dropdown.
     # The site defaults to "Daily Cart Rental" but Brett has a cart lease.
@@ -1109,6 +1129,7 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
 
     # Strategy 1: Telerik $find — iterate items and select "Cart Lease" directly
     for transport_combo_id in [
+        "ctl00_ctrl_MakeTeeTime_P1_transport_oCombo",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_Transport",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_CartType",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_TransportType",
