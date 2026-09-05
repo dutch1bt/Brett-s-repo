@@ -314,6 +314,7 @@ def _open_booking_for(page: Page, date: str, players: int):
     target = datetime.strptime(date, "%Y-%m-%d")
     booking_ctx = _find_booking_frame(page)
     _navigate_teesheet_to(booking_ctx, target)
+    _set_party_size_filter(booking_ctx, players)
     _screenshot(page, "04_results")
     return booking_ctx
 
@@ -986,6 +987,62 @@ def _reexpand_player_selector(page: Page, after_player_num: int) -> None:
         pass
 
 
+def _set_party_size_filter(ctx, players: int) -> None:
+    """
+    Set the tee sheet's party size filter so LaunchReserver() opens the modal
+    for the right number of players. Must be called before clicking Reserve.
+    Clubessential/Jonas Club typically exposes a select or radio group at the top
+    of the tee sheet. Tries common ID patterns; logs a warning and continues if
+    none are found (site defaults to Foursome which is fine if it fails for Single).
+    """
+    party_val = str(players)
+    selectors = [
+        "#ctl00_ctrl_TeeTimeSearch_ddlPartySize",
+        "#ctl00_ctrl_TeeTimeSearch_ddlNumPlayers",
+        "#ctl00_ctrl_TeeTimeSearch_ddlNumGolfers",
+        "select[id*='PartySize']",
+        "select[id*='NumPlayers']",
+        "select[id*='NumGolfers']",
+        "select[id*='GolferCount']",
+        "select[id*='ddlParty']",
+        "select[id*='ddlGolfer']",
+        "select[id*='PartySz']",
+    ]
+    for sel in selectors:
+        try:
+            el = ctx.locator(sel).first
+            if el.count():
+                el.select_option(value=party_val)
+                log.info("Party size filter → %d via %s", players, sel)
+                ctx.wait_for_timeout(500)
+                return
+        except Exception:
+            continue
+    # Try JS: look for any select whose options include "Single" or "1"
+    try:
+        found = ctx.evaluate(f"""
+            () => {{
+                const selects = [...document.querySelectorAll('select')];
+                for (const s of selects) {{
+                    const opts = [...s.options].map(o => o.value);
+                    if (opts.includes('{party_val}')) {{
+                        s.value = '{party_val}';
+                        s.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        return s.id || 'unknown-id';
+                    }}
+                }}
+                return null;
+            }}
+        """)
+        if found:
+            log.info("Party size filter → %d via JS fallback (select id=%s)", players, found)
+            ctx.wait_for_timeout(500)
+            return
+    except Exception:
+        pass
+    log.warning("Could not set party size filter to %d — Reserve will use site default", players)
+
+
 def _find_axis_frame(page: Page):
     """
     After LaunchReserver() opens the 'Book Tee Time' Axis dialog, the form fields
@@ -1476,6 +1533,8 @@ def make_reservation(
                 except Exception as e:
                     log.warning("Pre-navigate failed: %s — using _navigate_teesheet_to fallback", e)
                     _navigate_teesheet_to(ctx, tgt)
+                # Re-set party size after changeDate() AJAX reloads the sheet
+                _set_party_size_filter(ctx, players)
 
                 # Step 3: watch the DOM with a mutation observer until the first
                 # available slot appears — fires within ~100ms of the server opening
