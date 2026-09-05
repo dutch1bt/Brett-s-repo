@@ -72,6 +72,8 @@ jobs:
           GOLF_CLUB_PASSWORD: ${{ secrets.GOLF_CLUB_PASSWORD }}
           AUTO_RESERVE_PLAYERS: '1'
           AUTO_RESERVE_PLAYER_NAMES: 'Brett'
+          AUTO_RESERVE_ALL_PLAYERS: '4'
+          AUTO_RESERVE_ALL_PLAYER_NAMES: 'Brett,Brian Cogley,Rob Boss,Rocky Wiltsey'
           AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
           AUTO_RESERVE_BOOKING_OPEN_TIME: '06:30:00'
         run: |

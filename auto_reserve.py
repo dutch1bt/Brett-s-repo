@@ -66,6 +66,15 @@ MAX_TIME: str = os.getenv("AUTO_RESERVE_MAX_TIME", "")
 # The booking window time in America/Toronto, 24-hour HH:MM:SS format.
 BOOKING_OPEN_TIME: str = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
 
+# Phase 2: full group to add after Phase 1 secures the tee time as a Single.
+# Defaults to the same as PLAYER_NAMES if not separately configured.
+_all_names_raw = os.getenv(
+    "AUTO_RESERVE_ALL_PLAYER_NAMES",
+    "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
+)
+ALL_PLAYER_NAMES: list[str] = [n.strip() for n in _all_names_raw.split(",") if n.strip()]
+ALL_PLAYERS: int = int(os.getenv("AUTO_RESERVE_ALL_PLAYERS", str(len(ALL_PLAYER_NAMES))))
+
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
 # ---------------------------------------------------------------------------
@@ -161,6 +170,50 @@ def pick_slot(
 
 
 # ---------------------------------------------------------------------------
+# PHASE 2 — add players to the secured reservation
+# ---------------------------------------------------------------------------
+
+def _run_phase2(date: str, booked_time: str, confirmation: str) -> None:
+    """
+    After Phase 1 secures the tee time as a Single, upgrade it to the full party.
+    Runs in the same process; failure only logs a warning — the booking is safe.
+    """
+    if ALL_PLAYERS <= PLAYERS or len(ALL_PLAYER_NAMES) <= len(PLAYER_NAMES):
+        log.info("Phase 2: skipped (party size already at max or no extra players configured)")
+        return
+
+    log.info(
+        "Phase 2: adding %d players to %s on %s (confirmation %s)...",
+        ALL_PLAYERS, booked_time, date, confirmation,
+    )
+    try:
+        add_result = golf_agent._add_players_to_reservation(
+            date=date,
+            time=booked_time,
+            player_names=ALL_PLAYER_NAMES,
+            member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
+        )
+        if add_result.get("success"):
+            log.info("Phase 2 SUCCESS: %s", add_result.get("message"))
+            import json
+            with open("booking_result.json", "w") as f:
+                json.dump({
+                    "date": date,
+                    "time": booked_time,
+                    "confirmation": confirmation,
+                    "players": ALL_PLAYER_NAMES,
+                }, f)
+            log.info("booking_result.json updated with full player list for SMS")
+        else:
+            log.warning(
+                "Phase 2 FAILED: %s — tee time held by Brett, add players manually",
+                add_result.get("message", "unknown error"),
+            )
+    except Exception as exc:
+        log.warning("Phase 2 raised an exception: %s — tee time still held by Brett", exc)
+
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
@@ -206,6 +259,7 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
             log.info("SUCCESS — %s", result["message"])
             log.info("Confirmation number: %s", result["confirmation_number"])
             import json
+            # Write Phase 1 result (Brett only) so SMS still fires even if Phase 2 fails
             with open("booking_result.json", "w") as f:
                 json.dump({
                     "date": date,
@@ -213,6 +267,8 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
                     "confirmation": result["confirmation_number"],
                     "players": PLAYER_NAMES,
                 }, f)
+            # Phase 2: edit the reservation to add the full group
+            _run_phase2(date, booked_time, result["confirmation_number"])
         else:
             log.error("Reservation FAILED: %s", result.get("message", "unknown error"))
         return 0 if result.get("success") else 1
@@ -265,7 +321,6 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
         booked_time = result.get("time", slot["time"])
         log.info("SUCCESS — %s", result["message"])
         log.info("Confirmation number: %s", result["confirmation_number"])
-        # Write booking details for the SMS step to read
         import json
         with open("booking_result.json", "w") as f:
             json.dump({
@@ -274,6 +329,7 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
                 "confirmation": result["confirmation_number"],
                 "players": PLAYER_NAMES,
             }, f)
+        _run_phase2(date, booked_time, result["confirmation_number"])
         return 0
     else:
         log.error("Reservation FAILED: %s", result.get("message", "unknown error"))

@@ -1714,6 +1714,195 @@ def make_reservation(
             browser.close()
 
 
+def add_players_to_reservation(
+    date: str,
+    time: str,
+    player_names: list[str],
+    member_id: str,
+) -> dict:
+    """
+    Phase 2: edit an existing Single booking to upgrade it to a full party.
+
+    Flow:
+      1. Login and navigate to the tee sheet for `date`.
+      2. Set party size filter to len(player_names) so the tee sheet shows
+         Edit links on our already-booked slot.
+      3. Find the reserved slot at `time` and click its Edit link.
+      4. Inside the edit modal, change the party size from Single to the full
+         count and fill P2-P4 player names using _fill_booking_modal.
+      5. Submit and confirm.
+    """
+    players = len(player_names)
+    party_size = _PARTY_LABELS.get(players, "Foursome")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            # Open the booking page for the target date with the full party size filter
+            ctx = _open_booking_for(page, date, players)
+            _screenshot(page, "phase2_01_teesheet")
+
+            # Find the time cell for our reserved slot (any class — booked not Available)
+            target_dt = datetime.strptime(date, "%Y-%m-%d")
+            time_upper = time.strip().upper()
+
+            # Try the time cell via text content regardless of slot class
+            edit_clicked = False
+            for cell_sel in [
+                f"td:has-text('{time}')",
+                f"td:has-text('{time_upper}')",
+                "td[class*='NC_TimeSlotPanel']",
+            ]:
+                try:
+                    cells = ctx.locator(cell_sel)
+                    n = cells.count()
+                    for i in range(n):
+                        cell = cells.nth(i)
+                        cell_text = (cell.text_content() or "").strip()
+                        if time.upper() in cell_text.upper() or time_upper in cell_text.upper():
+                            parent_row = cell.locator("xpath=..")
+                            edit_el = parent_row.locator(
+                                "a:has-text('Edit'), a:has-text('Modify'), "
+                                "a:has-text('Change'), button:has-text('Edit'), "
+                                "[onclick*='Edit' i], [onclick*='LaunchReserver' i]"
+                            ).first
+                            if edit_el.count() and edit_el.is_visible():
+                                edit_el.click()
+                                log.info("Phase 2: clicked Edit on reservation at %s", time)
+                                edit_clicked = True
+                                break
+                    if edit_clicked:
+                        break
+                except Exception as ex:
+                    log.debug("Phase 2 edit search (%s): %s", cell_sel, ex)
+                    continue
+
+            if not edit_clicked:
+                # Fallback: look for any Edit link near text matching our time
+                try:
+                    edit_links = ctx.locator(
+                        "a:has-text('Edit'), a:has-text('Modify'), [onclick*='LaunchReserver' i]"
+                    )
+                    n = edit_links.count()
+                    log.info("Phase 2: %d Edit/Modify links on tee sheet — scanning for %s", n, time)
+                    _dump_html(ctx, "phase2_edit_search")
+                    for i in range(n):
+                        el = edit_links.nth(i)
+                        row = el.locator("xpath=../..").first
+                        row_text = (row.text_content() or "").upper()
+                        if time.upper() in row_text:
+                            el.click()
+                            log.info("Phase 2: fallback Edit click (row text matched %s)", time)
+                            edit_clicked = True
+                            break
+                except Exception as ex:
+                    log.warning("Phase 2 fallback edit search failed: %s", ex)
+
+            if not edit_clicked:
+                _screenshot(page, "phase2_error_no_edit")
+                return {
+                    "success": False,
+                    "message": (
+                        f"Could not find Edit link for {time} on {date}. "
+                        "The reservation is still held by Brett. Add players manually."
+                    ),
+                }
+
+            # Wait for the edit modal to open
+            page.wait_for_timeout(3000)
+            _screenshot(page, "phase2_02_edit_modal")
+            axis_frame = _find_axis_frame(page)
+            ctx_modal = axis_frame if axis_frame is not None else page
+            _dump_html(ctx_modal, "phase2_edit_modal_html")
+
+            # Try to change party size inside the modal from Single → full party
+            party_changed = False
+            party_val = str(players)
+            for sel in [
+                "select[id*='PartyType']", "select[id*='PartySz']",
+                "select[id*='NumPlayers']", "select[id*='NumGolfers']",
+                "select[id*='PartySize']", "select[id*='GolferCount']",
+            ]:
+                try:
+                    el = ctx_modal.locator(sel).first
+                    if el.count():
+                        el.select_option(value=party_val)
+                        log.info("Phase 2: party size → %d via %s", players, sel)
+                        ctx_modal.wait_for_timeout(1500)
+                        party_changed = True
+                        break
+                except Exception:
+                    continue
+            if not party_changed:
+                # JS fallback: find any select whose options contain the party count
+                try:
+                    found = ctx_modal.evaluate(f"""
+                        () => {{
+                            const selects = [...document.querySelectorAll('select')];
+                            for (const s of selects) {{
+                                const opts = [...s.options].map(o => o.value);
+                                if (opts.includes('{party_val}')) {{
+                                    s.value = '{party_val}';
+                                    s.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                    return s.id || 'unknown';
+                                }}
+                            }}
+                            return null;
+                        }}
+                    """)
+                    if found:
+                        log.info("Phase 2: party size → %d via JS (select id=%s)", players, found)
+                        ctx_modal.wait_for_timeout(1500)
+                        party_changed = True
+                except Exception:
+                    pass
+            if not party_changed:
+                log.warning(
+                    "Phase 2: could not change party size in modal — "
+                    "attempting to fill player names anyway"
+                )
+
+            # Fill P2-P4 using existing modal fill logic (P1 already set as Brett)
+            _fill_booking_modal(page, axis_frame, party_size, player_names)
+
+            # Wait for confirmation
+            try:
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except Exception:
+                pass
+            _screenshot(page, "phase2_03_confirmation")
+            _dump_html(page, "phase2_confirmation_html")
+
+            body = page.evaluate("document.body.innerText") or ""
+            if axis_frame:
+                try:
+                    body += "\n" + (axis_frame.evaluate("document.body.innerText") or "")
+                except Exception:
+                    pass
+            log.info("Phase 2 confirmation text (400): %r", body[:400])
+
+            if any(kw in body.lower() for kw in ["Make Tee Time", "Discard Changes"]):
+                # Still in modal — submit may not have fired
+                return {
+                    "success": False,
+                    "message": "Phase 2 modal still open after submit — check debug_screenshots.",
+                }
+
+            return {
+                "success": True,
+                "message": (
+                    f"Players added to {time} on {date}: {', '.join(player_names)}."
+                ),
+            }
+
+        except Exception:
+            _screenshot(page, "phase2_error")
+            raise
+        finally:
+            browser.close()
+
+
 def cancel_reservation(confirmation_number: str, member_id: str) -> dict:
     """
     Cancellations on most club systems require logging in and finding the
