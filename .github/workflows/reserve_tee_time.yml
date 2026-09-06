@@ -2,12 +2,15 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 07:00 UTC (3:00 AM EDT / 2:00 AM EST).
-    # GitHub cron routinely runs 90-120 min late on Sunday mornings.
-    # Starting at 07:00 UTC gives up to a 3.5 hour buffer before the
-    # 6:29 AM Eastern trigger. The "Wait" step sleeps until exactly
-    # 6:29 AM America/Toronto regardless of when the job actually starts.
-    - cron: '0 7 * * 0'
+    # Fire at 05:00 UTC (1:00 AM EDT / 12:00 AM EST) every Sunday.
+    # GitHub cron has been running 4-6 hours late on Sunday mornings.
+    # Starting at 05:00 UTC (1 AM EDT) gives a 9.5-hour buffer before
+    # the 6:30 AM Eastern booking window — survives even 6-hour delays.
+    # Job total time (worst case, no GitHub delay): ~5h25min, under the
+    # 6-hour GitHub limit. Wait step has a bail-out: if the runner
+    # started too late (past 6:40 AM EDT), it exits with failure so
+    # Brett gets an SMS alert rather than a garbage mid-morning slot.
+    - cron: '0 5 * * 0'
   workflow_dispatch:
     inputs:
       date:
@@ -42,12 +45,27 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 6:00 AM Eastern
+      - name: Wait until 6:00 AM Eastern (bail out if past 6:40 AM)
         if: github.event_name == 'schedule'
         run: |
-          # Wake at 6:00 AM so the browser can pre-warm (login + navigate) before
-          # the 6:30 AM booking window opens. The Python script then sleeps internally
-          # until 06:30:00 and fires changeDate() at the exact open moment.
+          # GitHub cron delays can be 4-6 hours on Sunday mornings.
+          # Bail out immediately if the runner started too late — better
+          # to fail and send an SMS alert than to book a mid-morning slot.
+          BAILOUT=$(python3 -c "
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          tz = ZoneInfo('America/Toronto')
+          t = datetime.now(tz).replace(hour=6, minute=40, second=0, microsecond=0)
+          print(int(t.timestamp()))
+          ")
+          NOW=$(date -u +%s)
+          if [ $NOW -ge $BAILOUT ]; then
+            echo "ERROR: Runner started after 6:40 AM Eastern (now=$(date -u)) — GitHub cron delay too large."
+            echo "Tee time window opened at 6:30 AM; too late to compete. Book manually at lakelandsgolf.com"
+            exit 1
+          fi
+
+          # Sleep until 6:00 AM Eastern so the browser has 30 min to pre-warm.
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
@@ -55,13 +73,12 @@ jobs:
           t = datetime.now(tz).replace(hour=6, minute=0, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
-          NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
             echo "Waiting ${DIFF}s until 6:00 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 6:00 AM Eastern (diff=${DIFF}s) — continuing."
+            echo "Already past 6:00 AM Eastern (diff=${DIFF}s) — continuing immediately."
           fi
 
       - name: Book tee time
