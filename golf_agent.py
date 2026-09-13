@@ -81,6 +81,23 @@ def _make_reservation(
     }
 
 
+def _add_players_to_reservation(
+    date: str,
+    time: str,
+    player_names: list[str],
+    member_id: str,
+) -> dict:
+    if _USING_REAL_BACKEND:
+        return _backend.add_players_to_reservation(date, time, player_names, member_id)
+    return {
+        "success": True,
+        "message": (
+            f"Players added to {time} on {date}: "
+            f"{', '.join(player_names)} (stub)."
+        ),
+    }
+
+
 def _cancel_reservation(confirmation_number: str, member_id: str) -> dict:
     if _USING_REAL_BACKEND:
         return _backend.cancel_reservation(confirmation_number, member_id)

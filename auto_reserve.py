@@ -61,6 +61,14 @@ PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
 MIN_TIME: str = os.getenv("AUTO_RESERVE_MIN_TIME", "")
 MAX_TIME: str = os.getenv("AUTO_RESERVE_MAX_TIME", "")
 
+# Phase 2: after securing the Phase 1 slot, edit it and add the full group.
+_all_names_raw = os.getenv(
+    "AUTO_RESERVE_ALL_PLAYER_NAMES",
+    "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
+)
+ALL_PLAYER_NAMES: list[str] = [n.strip() for n in _all_names_raw.split(",") if n.strip()]
+ALL_PLAYERS: int = int(os.getenv("AUTO_RESERVE_ALL_PLAYERS", str(len(ALL_PLAYER_NAMES))))
+
 # ---------------------------------------------------------------------------
 # LOGGING — appends to auto_reserve.log next to this script
 # ---------------------------------------------------------------------------
@@ -159,6 +167,37 @@ def pick_slot(
 # MAIN
 # ---------------------------------------------------------------------------
 
+def _run_phase2(date: str, booked_time: str, confirmation: str) -> None:
+    """Edit the Phase 1 reservation and add all players (Phase 2)."""
+    if ALL_PLAYERS <= PLAYERS or len(ALL_PLAYER_NAMES) <= len(PLAYER_NAMES):
+        log.info("Phase 2: skipped (no additional players to add)")
+        return
+    log.info(
+        "Phase 2: upgrading %s on %s to %s (%s)...",
+        booked_time, date,
+        {1: "Single", 2: "Twosome", 3: "Threesome", 4: "Foursome"}.get(ALL_PLAYERS, str(ALL_PLAYERS)),
+        ", ".join(ALL_PLAYER_NAMES),
+    )
+    add_result = golf_agent._add_players_to_reservation(
+        date=date,
+        time=booked_time,
+        player_names=ALL_PLAYER_NAMES,
+        member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
+    )
+    if add_result.get("success"):
+        log.info("Phase 2 SUCCESS — %s", add_result["message"])
+        with open("booking_result.json", "w") as f:
+            import json
+            json.dump({
+                "date": date,
+                "time": booked_time,
+                "confirmation": confirmation,
+                "players": ALL_PLAYER_NAMES,
+            }, f)
+    else:
+        log.warning("Phase 2 FAILED — %s (Phase 1 booking still stands)", add_result.get("message"))
+
+
 def run(dry_run: bool = False, date_override: str | None = None, time_preference: str | None = None) -> int:
     """
     Execute the auto-reserve flow. Returns 0 on success, 1 on failure.
@@ -226,16 +265,18 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
 
     if result.get("success"):
         log.info("SUCCESS — %s", result["message"])
-        log.info("Confirmation number: %s", result["confirmation_number"])
-        # Write booking details for the SMS step to read
+        conf = result["confirmation_number"]
+        log.info("Confirmation number: %s", conf)
         import json
         with open("booking_result.json", "w") as f:
             json.dump({
                 "date": date,
                 "time": slot["time"],
-                "confirmation": result["confirmation_number"],
+                "confirmation": conf,
                 "players": PLAYER_NAMES,
             }, f)
+        # Phase 2: edit reservation to add full group
+        _run_phase2(date, slot["time"], conf)
         return 0
     else:
         log.error("Reservation FAILED: %s", result.get("message", "unknown error"))

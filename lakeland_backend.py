@@ -276,7 +276,7 @@ def _navigate_to_booking_via_menu(page: Page) -> None:
     log.info("After menu nav: %s", page.url)
 
 
-def _open_booking_for(page: Page, date: str, players: int):
+def _open_booking_for(page: Page, date: str, players: int, skip_nav: bool = False):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
 
@@ -389,10 +389,11 @@ def _open_booking_for(page: Page, date: str, players: int):
     _dump_html(page, "03c_booking_page_html")
     _log_clickable_elements(page)
 
-    # --- Advance the tee-sheet calendar to the target date ---
-    target = datetime.strptime(date, "%Y-%m-%d")
     booking_ctx = _find_booking_frame(page)
-    _navigate_teesheet_to(booking_ctx, target)
+    if not skip_nav:
+        # --- Advance the tee-sheet calendar to the target date ---
+        target = datetime.strptime(date, "%Y-%m-%d")
+        _navigate_teesheet_to(booking_ctx, target)
     _screenshot(page, "04_results")
     return booking_ctx
 
@@ -1415,6 +1416,25 @@ def fetch_available_tee_times(date: str, players: int) -> list[dict]:
 _PARTY_LABELS = {1: "Single", 2: "Twosome", 3: "Threesome", 4: "Foursome"}
 
 
+def _set_party_size_filter(ctx, players: int) -> None:
+    """Set the tee-sheet party-size filter dropdown."""
+    label = _PARTY_LABELS.get(players, "Single")
+    for sel_id in [
+        "masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize",
+        "ctrl_Booking_drpGroupSize",
+    ]:
+        try:
+            loc = ctx.locator(f"#{sel_id}")
+            if loc.count():
+                loc.select_option(label=label)
+                log.info("Party size filter → %r (via #%s)", label, sel_id)
+                ctx.wait_for_timeout(1500)
+                return
+        except Exception as e:
+            log.debug("Party size via #%s failed: %s", sel_id, e)
+    log.warning("Could not set party size filter to %r", label)
+
+
 def make_reservation(
     date: str,
     time: str,
@@ -1423,12 +1443,71 @@ def make_reservation(
     member_id: str,
 ) -> dict:
     party_size = _PARTY_LABELS.get(players, "Single")
+    booking_open_env = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            ctx = _open_booking_for(page, date, players)
+            # In pre-warm mode skip date navigation — we'll do it precisely below.
+            ctx = _open_booking_for(page, date, players, skip_nav=bool(booking_open_env))
+
+            if booking_open_env:
+                import time as _time
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/Toronto")
+                h_o, m_o, s_o = (int(x) for x in booking_open_env.split(":"))
+                target_dt = datetime.strptime(date, "%Y-%m-%d")
+                js_date = f"{target_dt.month}/{target_dt.day}/{target_dt.year}"
+
+                def _prewarm_changedate() -> None:
+                    try:
+                        result = ctx.evaluate(f"""
+                            () => {{
+                                if (typeof changeDate !== 'undefined') {{
+                                    changeDate('{js_date}');
+                                    return 'ok:{js_date}';
+                                }}
+                                return 'changeDate not defined';
+                            }}
+                        """)
+                        log.info("Pre-warm changeDate: %s", result)
+                    except Exception as exc:
+                        log.warning("Pre-warm changeDate failed: %s", exc)
+
+                # ── Step 1: sleep until 10 min before open, navigate to target date ──
+                now = datetime.now(tz)
+                open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
+                pre_nav_sleep = (open_dt - now).total_seconds() - 10 * 60
+                if pre_nav_sleep > 1:
+                    log.info("Pre-warm: sleeping %.0fs until 10 min before window...", pre_nav_sleep)
+                    _time.sleep(pre_nav_sleep)
+
+                _prewarm_changedate()
+                ctx.wait_for_timeout(2500)
+                _set_party_size_filter(ctx, players)
+                _screenshot(page, "04_prewarm_nav")
+
+                # ── Step 2: sleep until 5 s before open, refresh, arm observer ──
+                now = datetime.now(tz)
+                pre_open_sleep = (open_dt - now).total_seconds() - 5
+                if pre_open_sleep > 1:
+                    log.info("Pre-warm: sleeping %.0fs until 5s before window...", pre_open_sleep)
+                    _time.sleep(pre_open_sleep)
+
+                _prewarm_changedate()
+                log.info("Pre-warm: window opens in ~5s — waiting for first available slot...")
+                try:
+                    ctx.wait_for_selector(
+                        "td[class*='NC_TimeSlotPanelSlotAvailable']",
+                        state="attached",
+                        timeout=90_000,
+                    )
+                    log.info("Pre-warm: SLOTS DETECTED — booking immediately!")
+                except PlaywrightTimeout:
+                    log.warning("Pre-warm: 90s timeout waiting for slots — proceeding anyway")
+                _screenshot(page, "04_prewarm_slots_ready")
+
             slots = _parse_slots(ctx, players)
 
             # Find the slot matching the requested time
@@ -1553,6 +1632,169 @@ def make_reservation(
         except Exception:
             _screenshot(page, "error_reserve")
             raise
+        finally:
+            browser.close()
+
+
+def add_players_to_reservation(
+    date: str,
+    time: str,
+    player_names: list[str],
+    member_id: str,
+) -> dict:
+    """
+    Phase 2: edit an existing Single reservation and upgrade to a Foursome.
+    Logs in, navigates to the target date, finds the reserved slot, clicks Edit,
+    changes party size, fills P2–P4, and submits "Update Tee Time".
+    """
+    all_players = len(player_names)
+    party_label = _PARTY_LABELS.get(all_players, "Foursome")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            ctx = _open_booking_for(page, date, all_players)
+            _screenshot(page, "p2_01_booking_page")
+            time_upper = time.upper().strip()
+
+            # Find the reserved time row
+            found_row = None
+            time_cells = ctx.locator("span.timeText")
+            n_cells = time_cells.count()
+            log.info("Phase 2: scanning %d time cells for %r", n_cells, time_upper)
+            for i in range(n_cells):
+                cell = time_cells.nth(i)
+                raw = (cell.text_content() or "").strip().upper()
+                parsed = _parse_time(raw)
+                if parsed and parsed.upper() == time_upper:
+                    found_row = cell.locator("xpath=../..").first
+                    log.info("Phase 2: found time at cell %d", i)
+                    break
+
+            if found_row is None:
+                loc = ctx.locator(f"*:has-text('{time}')").first
+                if loc.count():
+                    found_row = loc.locator("xpath=..").first
+                    log.info("Phase 2: found time via broad selector")
+
+            if found_row is None:
+                _screenshot(page, "p2_error_time_not_found")
+                return {"success": False, "message": f"Phase 2: {time} row not found on {date}"}
+
+            # Click Edit in that row
+            edit_clicked = False
+            for sel in [
+                "a:has-text('Edit')", "a:has-text('Modify')",
+                "input[value*='Edit' i]", "[onclick*='Edit' i]",
+            ]:
+                try:
+                    loc = found_row.locator(sel).first
+                    if loc.count():
+                        loc.click(force=True)
+                        log.info("Phase 2: Edit clicked via %r", sel)
+                        edit_clicked = True
+                        break
+                except Exception:
+                    continue
+
+            if not edit_clicked:
+                for sel in ["a:has-text('Edit')", "a:has-text('Modify')"]:
+                    try:
+                        loc = ctx.locator(sel).first
+                        if loc.count():
+                            loc.click(force=True)
+                            log.info("Phase 2: Edit clicked (page-wide) via %r", sel)
+                            edit_clicked = True
+                            break
+                    except Exception:
+                        continue
+
+            if not edit_clicked:
+                _screenshot(page, "p2_error_no_edit_link")
+                return {"success": False, "message": "Phase 2: Edit link not found for reserved slot"}
+
+            page.wait_for_timeout(3000)
+            axis_frame = _find_axis_frame(page)
+            ctx2 = axis_frame if axis_frame else page
+            _screenshot(page, "p2_02_edit_modal")
+            _dump_html(ctx2, "p2_02_edit_modal_html")
+
+            # Change party size to Foursome via Telerik
+            try:
+                tk_result = ctx2.evaluate(f"""
+                    () => {{
+                        if (typeof $find === 'undefined') return 'no $find';
+                        const combo = $find('ctl00_ctrl_MakeTeeTime_drpPartySize');
+                        if (!combo) return 'combo not found';
+                        const items = combo.get_items();
+                        for (let i = 0; i < items.get_count(); i++) {{
+                            const item = items.getItem(i);
+                            if ((item.get_text() || '').toLowerCase().includes('{party_label.lower()}')) {{
+                                item.select();
+                                return 'selected: ' + item.get_text();
+                            }}
+                        }}
+                        combo.set_text('{party_label}');
+                        return 'set_text fallback';
+                    }}
+                """)
+                log.info("Phase 2 party size change: %s", tk_result)
+                if tk_result and ("selected:" in tk_result or "set_text" in tk_result):
+                    page.wait_for_timeout(1500)
+            except Exception as e:
+                log.warning("Phase 2: could not change party size in modal: %s", e)
+
+            _fill_booking_modal(page, axis_frame, party_label, player_names)
+
+            # Submit "Update Tee Time"
+            update_clicked = False
+            for btn_sel in [
+                "#ctl00_ctrl_MakeTeeTime_lbBook",
+                "a:has-text('Update Tee Time')",
+                "a:has-text('Update')",
+                "[id*='lbBook']",
+            ]:
+                for ctx_try in [ctx2, page]:
+                    try:
+                        loc = ctx_try.locator(btn_sel).first
+                        if loc.count():
+                            loc.click(force=True)
+                            log.info("Phase 2: Update Tee Time clicked via %r", btn_sel)
+                            update_clicked = True
+                            break
+                    except Exception:
+                        continue
+                if update_clicked:
+                    break
+
+            page.wait_for_timeout(3000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
+            _screenshot(page, "p2_03_after_update")
+
+            body = page.evaluate("document.body.innerText") or ""
+            if axis_frame:
+                try:
+                    body += "\n" + (axis_frame.evaluate("document.body.innerText") or "")
+                except Exception:
+                    pass
+            log.info("Phase 2 result text (500): %r", body[:500])
+
+            return {
+                "success": True,
+                "message": (
+                    f"Phase 2 complete: {party_label} on {date} at {time} "
+                    f"— {', '.join(player_names)}"
+                ),
+            }
+
+        except Exception as e:
+            _screenshot(page, "p2_error")
+            log.error("Phase 2 failed: %s", e)
+            return {"success": False, "message": f"Phase 2 exception: {e}"}
         finally:
             browser.close()
 
