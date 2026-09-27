@@ -61,13 +61,7 @@ PREFERRED_TIME: str = os.getenv("AUTO_RESERVE_PREFERRED_TIME", "7:30 AM")
 MIN_TIME: str = os.getenv("AUTO_RESERVE_MIN_TIME", "")
 MAX_TIME: str = os.getenv("AUTO_RESERVE_MAX_TIME", "")
 
-# Pre-warm: when set (e.g. "06:30:00"), skip the fetch session and let
-# make_reservation() sleep internally until this time, then fire instantly.
-# The booking window time in America/Toronto, 24-hour HH:MM:SS format.
-BOOKING_OPEN_TIME: str = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
-
-# Phase 2: full group to add after Phase 1 secures the tee time as a Single.
-# Defaults to the same as PLAYER_NAMES if not separately configured.
+# Phase 2: after securing the Phase 1 slot, edit it and add the full group.
 _all_names_raw = os.getenv(
     "AUTO_RESERVE_ALL_PLAYER_NAMES",
     "Brett,Brian Cogley,Rob Boss,Rocky Wiltsey",
@@ -170,52 +164,39 @@ def pick_slot(
 
 
 # ---------------------------------------------------------------------------
-# PHASE 2 — add players to the secured reservation
+# MAIN
 # ---------------------------------------------------------------------------
 
 def _run_phase2(date: str, booked_time: str, confirmation: str) -> None:
-    """
-    After Phase 1 secures the tee time as a Single, upgrade it to the full party.
-    Runs in the same process; failure only logs a warning — the booking is safe.
-    """
+    """Edit the Phase 1 reservation and add all players (Phase 2)."""
     if ALL_PLAYERS <= PLAYERS or len(ALL_PLAYER_NAMES) <= len(PLAYER_NAMES):
-        log.info("Phase 2: skipped (party size already at max or no extra players configured)")
+        log.info("Phase 2: skipped (no additional players to add)")
         return
-
     log.info(
-        "Phase 2: adding %d players to %s on %s (confirmation %s)...",
-        ALL_PLAYERS, booked_time, date, confirmation,
+        "Phase 2: upgrading %s on %s to %s (%s)...",
+        booked_time, date,
+        {1: "Single", 2: "Twosome", 3: "Threesome", 4: "Foursome"}.get(ALL_PLAYERS, str(ALL_PLAYERS)),
+        ", ".join(ALL_PLAYER_NAMES),
     )
-    try:
-        add_result = golf_agent._add_players_to_reservation(
-            date=date,
-            time=booked_time,
-            player_names=ALL_PLAYER_NAMES,
-            member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
-        )
-        if add_result.get("success"):
-            log.info("Phase 2 SUCCESS: %s", add_result.get("message"))
+    add_result = golf_agent._add_players_to_reservation(
+        date=date,
+        time=booked_time,
+        player_names=ALL_PLAYER_NAMES,
+        member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
+    )
+    if add_result.get("success"):
+        log.info("Phase 2 SUCCESS — %s", add_result["message"])
+        with open("booking_result.json", "w") as f:
             import json
-            with open("booking_result.json", "w") as f:
-                json.dump({
-                    "date": date,
-                    "time": booked_time,
-                    "confirmation": confirmation,
-                    "players": ALL_PLAYER_NAMES,
-                }, f)
-            log.info("booking_result.json updated with full player list for SMS")
-        else:
-            log.warning(
-                "Phase 2 FAILED: %s — tee time held by Brett, add players manually",
-                add_result.get("message", "unknown error"),
-            )
-    except Exception as exc:
-        log.warning("Phase 2 raised an exception: %s — tee time still held by Brett", exc)
+            json.dump({
+                "date": date,
+                "time": booked_time,
+                "confirmation": confirmation,
+                "players": ALL_PLAYER_NAMES,
+            }, f)
+    else:
+        log.warning("Phase 2 FAILED — %s (Phase 1 booking still stands)", add_result.get("message"))
 
-
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
 
 def run(dry_run: bool = False, date_override: str | None = None, time_preference: str | None = None) -> int:
     """
@@ -238,43 +219,8 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
 
     log.info("Target date: %s", date)
 
-    # 2a. Pre-warm fast path: browser was pre-loaded before the booking window
-    #     opened; make_reservation() will sleep internally until the open time
-    #     and fire immediately — no separate fetch session needed.
-    if BOOKING_OPEN_TIME and not dry_run:
-        slot_time = time_preference or PREFERRED_TIME
-        log.info(
-            "Pre-warm mode (opens %s Eastern) — skipping fetch, booking %s directly",
-            BOOKING_OPEN_TIME, slot_time,
-        )
-        result = golf_agent._make_reservation(
-            date=date,
-            time=slot_time,
-            players=PLAYERS,
-            player_names=PLAYER_NAMES,
-            member_id=os.getenv("GOLF_CLUB_MEMBER_ID", ""),
-        )
-        if result.get("success"):
-            booked_time = result.get("time", slot_time)
-            log.info("SUCCESS — %s", result["message"])
-            log.info("Confirmation number: %s", result["confirmation_number"])
-            import json
-            # Write Phase 1 result (Brett only) so SMS still fires even if Phase 2 fails
-            with open("booking_result.json", "w") as f:
-                json.dump({
-                    "date": date,
-                    "time": booked_time,
-                    "confirmation": result["confirmation_number"],
-                    "players": PLAYER_NAMES,
-                }, f)
-            # Phase 2: edit the reservation to add the full group
-            _run_phase2(date, booked_time, result["confirmation_number"])
-        else:
-            log.error("Reservation FAILED: %s", result.get("message", "unknown error"))
-        return 0 if result.get("success") else 1
-
-    # 2b. Normal path: fetch available slots, pick the best, then reserve.
-    #     Retries for up to 90 s so we catch the moment the booking window opens.
+    # 2. Fetch available slots — retry for up to 90 s so we catch the exact
+    #    moment the booking window opens (script starts at 7:29, window at 7:30).
     slots = []
     for attempt in range(7):
         slots = golf_agent._fetch_available_tee_times(date, PLAYERS)
@@ -318,18 +264,19 @@ def run(dry_run: bool = False, date_override: str | None = None, time_preference
     )
 
     if result.get("success"):
-        booked_time = result.get("time", slot["time"])
         log.info("SUCCESS — %s", result["message"])
-        log.info("Confirmation number: %s", result["confirmation_number"])
+        conf = result["confirmation_number"]
+        log.info("Confirmation number: %s", conf)
         import json
         with open("booking_result.json", "w") as f:
             json.dump({
                 "date": date,
-                "time": booked_time,
-                "confirmation": result["confirmation_number"],
+                "time": slot["time"],
+                "confirmation": conf,
                 "players": PLAYER_NAMES,
             }, f)
-        _run_phase2(date, booked_time, result["confirmation_number"])
+        # Phase 2: edit reservation to add full group
+        _run_phase2(date, slot["time"], conf)
         return 0
     else:
         log.error("Reservation FAILED: %s", result.get("message", "unknown error"))

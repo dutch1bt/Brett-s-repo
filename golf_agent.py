@@ -91,7 +91,10 @@ def _add_players_to_reservation(
         return _backend.add_players_to_reservation(date, time, player_names, member_id)
     return {
         "success": True,
-        "message": f"Players added to {time} on {date}: {', '.join(player_names)} (stub).",
+        "message": (
+            f"Players added to {time} on {date}: "
+            f"{', '.join(player_names)} (stub)."
+        ),
     }
 
 

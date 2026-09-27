@@ -2,14 +2,12 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 05:00 UTC (1:00 AM EDT / 12:00 AM EST) every Sunday.
-    # GitHub cron has been running 4-6 hours late on Sunday mornings.
-    # Starting at 05:00 UTC (1 AM EDT) gives a 9.5-hour buffer before
-    # the 6:30 AM Eastern booking window — survives even 6-hour delays.
-    # Job total time (worst case, no GitHub delay): ~5h25min, under the
-    # 6-hour GitHub limit. Wait step has a bail-out: if the runner
-    # started too late (past 6:40 AM EDT), it exits with failure so
-    # Brett gets an SMS alert rather than a garbage mid-morning slot.
+    # Fire at 05:00 UTC (1:00 AM EDT / 12:00 AM EST).
+    # GitHub cron can run 4-6 hours late on Sunday mornings.
+    # Starting at 05:00 UTC gives up to a 5.5-hour buffer before the
+    # 6:30 AM Eastern booking window. The Wait step sleeps the runner
+    # until 5:30 AM Eastern; the Python pre-warm loop then handles the
+    # precise 6:30 AM window open.
     - cron: '0 5 * * 0'
   workflow_dispatch:
     inputs:
@@ -18,7 +16,7 @@ on:
         required: false
         default: ''
       time_preference:
-        description: 'Preferred tee time e.g. "1:00 PM". Leave empty for earliest available.'
+        description: 'Preferred tee time e.g. "7:30 AM". Leave empty for earliest available.'
         required: false
         default: ''
       dry_run:
@@ -45,54 +43,53 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 6:00 AM Eastern (bail out if past 6:40 AM)
+      - name: Wait until 5:30 AM Eastern (bail out if past 6:20 AM)
         if: github.event_name == 'schedule'
         run: |
-          # GitHub cron delays can be 4-6 hours on Sunday mornings.
-          # Bail out immediately if the runner started too late — better
-          # to fail and send an SMS alert than to book a mid-morning slot.
+          # If the runner starts after 6:20 AM it's too late for the pre-warm
+          # window — Python needs at least 10 min to log in before 6:30 AM.
           BAILOUT=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=6, minute=40, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=6, minute=20, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           if [ $NOW -ge $BAILOUT ]; then
-            echo "ERROR: Runner started after 6:40 AM Eastern (now=$(date -u)) — GitHub cron delay too large."
-            echo "Tee time window opened at 6:30 AM; too late to compete. Book manually at lakelandsgolf.com"
+            echo "ERROR: Runner started after 6:20 AM Eastern — too late for pre-warm. Book manually."
             exit 1
           fi
-
-          # Sleep until 6:00 AM Eastern so the browser has 30 min to pre-warm.
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=6, minute=0, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=5, minute=30, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 6:00 AM Eastern..."
+            echo "Waiting ${DIFF}s until 5:30 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 6:00 AM Eastern (diff=${DIFF}s) — continuing immediately."
+            echo "Already past 5:30 AM Eastern (diff=${DIFF}s) — continuing immediately."
           fi
 
-      - name: Book tee time
+      - name: Book tee time (Phase 1 — single player, fastest possible)
         id: book
         env:
           GOLF_CLUB_NAME: Lakelands Golf and Country Club
           GOLF_CLUB_USERNAME: ${{ secrets.GOLF_CLUB_USERNAME }}
           GOLF_CLUB_PASSWORD: ${{ secrets.GOLF_CLUB_PASSWORD }}
+          # Phase 1: book as Single (Brett only) — fastest path to secure the slot
           AUTO_RESERVE_PLAYERS: '1'
           AUTO_RESERVE_PLAYER_NAMES: 'Brett'
+          AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
+          # Pre-warm: Python logs in early and waits for exactly 06:30:00 AM Eastern
+          AUTO_RESERVE_BOOKING_OPEN_TIME: '06:30:00'
+          # Phase 2: edit the reservation and add all players after securing the slot
           AUTO_RESERVE_ALL_PLAYERS: '4'
           AUTO_RESERVE_ALL_PLAYER_NAMES: 'Brett,Brian Cogley,Rob Boss,Rocky Wiltsey'
-          AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
-          AUTO_RESERVE_BOOKING_OPEN_TIME: '06:30:00'
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.date }}" ]; then

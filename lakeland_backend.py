@@ -171,138 +171,217 @@ def _login(page: Page) -> None:
     log.info("Logging in as %s ...", username)
     page.goto(LOGIN_URL, wait_until="networkidle", timeout=30_000)
     _screenshot(page, "01_login_page")
-    _log_all_inputs(page)
 
-    # Fill username then password using exact IDs first, generic selectors as fallback
-    for u_sel, p_sel in [
-        ('#masterPageUC_ctl02_ctl00_txtUsername', '#masterPageUC_ctl02_ctl00_txtPassword'),
-        ('input[type="text"]', 'input[type="password"]'),
-    ]:
-        try:
-            page.locator(u_sel).first.fill(username)
-            page.locator(p_sel).first.fill(password)
-            log.info("Filled login form via %r", u_sel)
-            break
-        except Exception:
-            continue
+    filled = _fill_first(
+        page,
+        [
+            'input[type="text"]',
+            '[id*="UserName" i]',
+            '[name*="UserName" i]',
+            '[id*="user" i]',
+            '[name*="user" i]',
+        ],
+        username,
+        "username",
+    )
+    if not filled:
+        _screenshot(page, "01_login_no_username")
+        raise RuntimeError(
+            "Could not find a username field on the login page. "
+            "See debug_screenshots/01_login_no_username*.png"
+        )
 
-    page.wait_for_timeout(300)
+    page.locator('input[type="password"]').first.fill(password)
 
-    # Diagnostic: confirm values are in the DOM and doLogin is available
-    pre = page.evaluate("""
-        () => {
-            const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
-                   || document.querySelector('input[type="text"]');
-            const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
-                   || document.querySelector('input[type="password"]');
-            return {
-                usernameLen: u ? u.value.length : -1,
-                passwordLen: p ? p.value.length : -1,
-                doLoginDefined: typeof doLogin !== 'undefined',
-            };
-        }
-    """)
-    log.info("Login pre-submit: username_len=%d password_len=%d doLogin=%s",
-             pre.get('usernameLen', -1), pre.get('passwordLen', -1),
-             pre.get('doLoginDefined'))
-
-    _screenshot(page, "01a_before_login_submit")
-
-    # Call doLogin() directly — same method confirmed working for detecting auth state.
-    # 'p=MembersDefault' is the destination the login form uses on this page.
-    login_result = page.evaluate("""
-        () => {
-            const u = document.getElementById('masterPageUC_ctl02_ctl00_txtUsername')
-                   || document.querySelector('input[type="text"]');
-            const p = document.getElementById('masterPageUC_ctl02_ctl00_txtPassword')
-                   || document.querySelector('input[type="password"]');
-            if (typeof doLogin !== 'undefined' && u && p && u.value && p.value) {
-                doLogin('p=MembersDefault', 8, '0');
-                return 'doLogin_called';
-            }
-            return 'doLogin_skipped:defined=' + (typeof doLogin !== 'undefined')
-                 + ',ulen=' + (u ? u.value.length : 'missing')
-                 + ',plen=' + (p ? p.value.length : 'missing');
-        }
-    """)
-    log.info("Login doLogin() result: %s", login_result)
-
-    if 'doLogin_skipped' in login_result:
-        # Fallback: click the submit button directly
-        _click_first(page, [
-            '#btnSecureLogin',
+    clicked = _click_first(
+        page,
+        [
             'input[type="submit"]',
+            'button[type="submit"]',
             '[id*="Login" i]',
-        ], "login button")
+            '[id*="Submit" i]',
+            '[value*="Login" i]',
+            '[value*="Sign in" i]',
+        ],
+        "login button",
+    )
+    if not clicked:
+        _screenshot(page, "01_login_no_button")
+        raise RuntimeError(
+            "Could not find a login submit button. "
+            "See debug_screenshots/01_login_no_button*.png"
+        )
 
-    # Wait for the member dashboard to appear (URL changes or content loads)
-    try:
-        page.wait_for_url("*p=MembersDefault*", timeout=15_000)
-    except Exception:
-        page.wait_for_load_state("networkidle", timeout=15_000)
-
+    page.wait_for_load_state("networkidle", timeout=30_000)
     _screenshot(page, "02_post_login")
-    log.info("After login: %s", page.url)
 
-    # Verify we actually landed on the member area, not back on the login page
-    page_text = page.evaluate("() => document.body.innerText.slice(0, 300)")
-    log.info("Post-login page text: %s", page_text.replace('\n', ' ')[:200])
-    if 'btnSecureLogin' in (page.content() or '') and 'Make a Tee Time' not in (page.content() or ''):
-        log.warning("Login may have failed — still seeing login form after submit")
+    # Detect login failure via error message or redirect back to login
+    for err_sel in [".error", ".alert-danger", '[class*="error" i]', '[class*="invalid" i]']:
+        try:
+            loc = page.locator(err_sel).first
+            if loc.is_visible():
+                raise RuntimeError(f"Login failed: {loc.text_content()}")
+        except PlaywrightTimeout:
+            pass
+
+    log.info("Login OK — now at: %s", page.url)
 
 
 # ---------------------------------------------------------------------------
 # Navigate to the booking page and advance the tee-sheet calendar
 # ---------------------------------------------------------------------------
 
+def _navigate_to_booking_via_menu(page: Page) -> None:
+    """
+    After logging in at LOGIN_URL, navigate to the main club site and use the
+    Golf > Book a Tee Time nav menu to reach the booking page.
+    This avoids the ssid/session mismatch that ssidfail causes.
+    """
+    # Go to the club's main homepage (not the dynamicmodule login URL)
+    page.goto("https://www.lakelandsgolf.com/default.aspx",
+              wait_until="networkidle", timeout=30_000)
+    _screenshot(page, "menu_01_home")
+    log.info("Main site URL: %s", page.url)
+    _log_clickable_elements(page)
 
-def _open_booking_for(page: Page, date: str, players: int):
+    # Golf nav item
+    golf_clicked = _click_first(
+        page,
+        [
+            'a:has-text("Golf")',
+            'nav a:text-matches("^Golf$", "i")',
+            'li a:text-matches("^Golf$", "i")',
+            'a:text-matches("^Golf$", "i")',
+        ],
+        "Golf menu item",
+    )
+    if golf_clicked:
+        page.wait_for_timeout(600)
+        _screenshot(page, "menu_02_golf_menu")
+
+    # Book a Tee Time link
+    _click_first(
+        page,
+        [
+            'a:has-text("Book a Tee Time")',
+            'a:text-matches("book.*tee", "i")',
+            'a:text-matches("tee.*time", "i")',
+            'a[href*="pageid=125"]',
+            'a[href*="booking"]',
+        ],
+        "Book a Tee Time link",
+    )
+    page.wait_for_load_state("networkidle", timeout=30_000)
+    _screenshot(page, "menu_03_booking")
+    log.info("After menu nav: %s", page.url)
+
+
+def _open_booking_for(page: Page, date: str, players: int, skip_nav: bool = False):
     """
     Land on the Lakelands tee-sheet and navigate to the target date.
 
-    Flow: login via LOGIN_URL (ssid=100033) → click "MAKE A TEE TIME" link on
-    the member portal → server transfers session to ssid=100178 booking page.
-    This mirrors exactly what a human does and avoids the ssidfail auth dance.
+    The Lakelands site uses separate session tokens per sub-system (ssid).
+    Logging in via LOGIN_URL establishes ssid=100033 but NOT ssid=100178 (booking).
+    When we navigate to BOOKING_URL unauthenticated, the server redirects to a
+    second login page (?p=home&e=6&ssidfail=true) that has doLogin(...pageid=125...)
+    baked into its submit button. Logging in *there* lands us directly on the
+    booking page — no separate pre-login needed.
 
     Returns the Frame or Page that contains the tee-sheet content.
     """
     log.info("Opening booking page for %s ...", date)
+    username, password = _credentials()
 
-    # Step 1: login to the member portal (ssid=100033).
-    _login(page)
-    _screenshot(page, "03_post_login_portal")
-    _log_clickable_elements(page)
+    # Navigate directly to the booking URL (unauthenticated is fine — it will
+    # redirect us to the ssidfail login page for the booking sub-system).
+    page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+    _screenshot(page, "03_booking_goto")
+    _log_frames(page)
+    log.info("After goto BOOKING_URL: %s", page.url)
 
-    # Step 2: click "MAKE A TEE TIME" on the portal page — this is the same
-    # link the human clicks, and it carries the ssid=100033 session into the
-    # booking sub-system (ssid=100178) without triggering ssidfail.
-    tee_time_link_selectors = [
-        'a:has-text("Make a Tee Time")',
-        'a:text-matches("make.*tee.*time", "i")',
-        'a:text-matches("book.*tee.*time", "i")',
-        'a:text-matches("tee.*time", "i")',
-        'a[href*="pageid=125"]',
-        'a[href*="ssid=100178"]',
-        'a[href*="booking"]',
-    ]
-    clicked = _click_first(page, tee_time_link_selectors, "Make a Tee Time link")
-    if clicked:
-        log.info("Clicked 'Make a Tee Time' link — waiting for booking page...")
+    # If we were redirected to the ssidfail/login page, fill credentials there.
+    # The submit button calls doLogin('p=dynamicmodule&pageid=125&...') which
+    # should redirect us to the booking page on success.
+    if any(kw in page.url for kw in ["ssidfail", "pageid=9", "login", "e=6"]) \
+            or "pageid=125" not in page.url:
+        log.info("Not on booking page — logging in via ssidfail form")
+        _dump_html(page, "03_ssidfail_login_page")
+        _log_all_inputs(page)
+
+        # Use JavaScript to fill the form fields AND dispatch the DOM events
+        # that doLogin() checks before reading values. Playwright's fill()
+        # alone may not fire all the events the ASP.NET form expects.
+        page.evaluate(
+            """
+            ([u, p]) => {
+                const vis = el => el.offsetParent !== null;
+                const fire = (el, val) => {
+                    el.focus();
+                    el.value = val;
+                    ['input','change','blur'].forEach(evt =>
+                        el.dispatchEvent(new Event(evt, {bubbles: true})));
+                };
+                const texts = [...document.querySelectorAll('input[type="text"]')].filter(vis);
+                const pws   = [...document.querySelectorAll('input[type="password"]')].filter(vis);
+                if (texts.length) fire(texts[0], u);
+                if (pws.length)   fire(pws[0],   p);
+            }
+            """,
+            [username, password],
+        )
+        # Belt-and-suspenders: also use Playwright's native fill so the
+        # accessibility tree reflects the values
+        try:
+            page.locator('input[type="text"]').first.fill(username)
+        except Exception:
+            pass
+        try:
+            page.locator('input[type="password"]').first.fill(password)
+        except Exception:
+            pass
+
+        page.wait_for_timeout(600)  # let the form settle before clicking
+        _screenshot(page, "03a_before_login_click")
+
+        _click_first(
+            page,
+            [
+                '#btnSecureLogin',
+                '[id*="SecureLogin" i]',
+                'input[value*="Sign In" i]',
+                '[onclick*="doLogin" i]',
+                'input[type="submit"]',
+                'button[type="submit"]',
+            ],
+            "sign-in button on ssidfail page",
+        )
+
+        # Wait for the URL to change to the booking page (up to 20s)
         try:
             page.wait_for_url("*pageid=125*", timeout=20_000)
+            log.info("Navigated to booking page: %s", page.url)
         except Exception:
             page.wait_for_load_state("networkidle", timeout=15_000)
-        log.info("After tee time link click: %s", page.url)
-        _screenshot(page, "03b_after_tee_time_link")
-    else:
-        log.warning("Could not find 'Make a Tee Time' link — falling back to direct BOOKING_URL nav")
+            log.info("After login click: %s", page.url)
 
-    # Step 3: if we're still not on the booking page, go there directly.
-    if "pageid=125" not in page.url:
-        log.info("Not on booking page — navigating directly to BOOKING_URL")
-        page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
-        _screenshot(page, "03c_direct_booking_nav")
-        log.info("After direct booking nav: %s", page.url)
+        _screenshot(page, "03b_after_ssidfail_login")
+
+        # If we're not on the booking page yet, navigate there directly.
+        # The form login may have landed us on the member home page (p=home&E=1)
+        # which means the session IS established — we just need to go to BOOKING_URL.
+        if "pageid=125" not in page.url:
+            log.info("Login landed elsewhere — navigating directly to BOOKING_URL...")
+            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+            _screenshot(page, "03b2_direct_booking_nav")
+            log.info("After direct booking nav: %s", page.url)
+
+        # Final fallback: full re-login via LOGIN_URL then direct booking nav
+        if "pageid=125" not in page.url:
+            log.warning("Direct nav failed — falling back to LOGIN_URL re-login")
+            _login(page)
+            page.goto(BOOKING_URL, wait_until="networkidle", timeout=30_000)
+            _screenshot(page, "03b3_after_relogin_nav")
+            log.info("After re-login + direct nav: %s", page.url)
 
     log.info("Booking page URL: %s", page.url)
     _screenshot(page, "03c_booking_page")
@@ -310,11 +389,11 @@ def _open_booking_for(page: Page, date: str, players: int):
     _dump_html(page, "03c_booking_page_html")
     _log_clickable_elements(page)
 
-    # --- Advance the tee-sheet calendar to the target date ---
-    target = datetime.strptime(date, "%Y-%m-%d")
     booking_ctx = _find_booking_frame(page)
-    _navigate_teesheet_to(booking_ctx, target)
-    _set_party_size_filter(booking_ctx, players)
+    if not skip_nav:
+        # --- Advance the tee-sheet calendar to the target date ---
+        target = datetime.strptime(date, "%Y-%m-%d")
+        _navigate_teesheet_to(booking_ctx, target)
     _screenshot(page, "04_results")
     return booking_ctx
 
@@ -785,6 +864,7 @@ def _parse_slots(ctx, players: int) -> list[dict]:
 
     for i in range(n_avail):
         cell = available_cells.nth(i)
+        # Time lives in a <span class="timeText"> inside the cell
         time_span = cell.locator("span.timeText").first
         if time_span.count():
             raw = (time_span.text_content() or "").strip()
@@ -794,48 +874,7 @@ def _parse_slots(ctx, players: int) -> list[dict]:
         if not t:
             log.warning("Available cell %d: could not parse time from %r", i, raw[:60])
             continue
-
-        # Detect partially-booked slots by walking up the DOM until we find a
-        # container that holds exactly ONE tee time (stopping when a second time
-        # pattern appears). Strip the time, tee label, "Book Now", and count badge
-        # from that container's text — if real text remains, it's player names.
-        try:
-            partial = cell.evaluate(r"""
-                el => {
-                    const timeRe = /\d{1,2}:\d{2}\s*(AM|PM)/gi;
-                    const clean = s => s
-                        .replace(timeRe, '')
-                        .replace(/\b\d+(?:st|nd|rd|th)\s+TEE\b/gi, '')
-                        .replace(/\[.*?Tee\]/gi, '')
-                        .replace(/\b(?:Book\s*Now|Unavailable|Request|Reserved|Reserve|Event|Edit|View\s*Registrants|JOIN)\b/gi, '')
-                        .replace(/\[\d+\]|\(\d+\)/gi, '')
-                        .replace(/\s+/g, ' ').trim();
-
-                    let node = el;
-                    for (let depth = 0; depth < 8; depth++) {
-                        const txt = (node.innerText || node.textContent || '').trim();
-                        const times = txt.match(/\d{1,2}:\d{2}\s*(AM|PM)/gi) || [];
-                        if (times.length > 1) break;  // crossed into adjacent tee time
-                        const stripped = clean(txt);
-                        if (stripped.length > 5) {
-                            return { hasBooked: true, depth, text: stripped.slice(0, 150) };
-                        }
-                        if (!node.parentElement) break;
-                        node = node.parentElement;
-                    }
-                    return { hasBooked: false };
-                }
-            """)
-            if partial.get('hasBooked'):
-                log.info(
-                    "Slot %r skipped — player names at depth %s: %r",
-                    t, partial.get('depth'), partial.get('text', '')[:100],
-                )
-                continue
-            log.info("Slot %r is empty — adding", t)
-        except Exception as e:
-            log.warning("Could not check slot %r for existing players: %s — including anyway", t, e)
-
+        log.info("Found available slot %d: time=%r", i, t)
         slots.append({
             "time": t,
             "available_spots": 4,
@@ -845,9 +884,11 @@ def _parse_slots(ctx, players: int) -> list[dict]:
             "_slot_selector": avail_sel,
         })
 
-    # Fallback: if CSS class approach found nothing, do a broad text scan.
+    # Fallback: if CSS class approach found nothing, do a broad text scan
+    # (keeps the code working on other platforms or if the class names change).
     if not slots:
         log.info("CSS class scan found 0 slots — falling back to table-row text scan")
+        # Log raw text_content of first 5 rows that contain a colon, for diagnosis
         candidates = ctx.locator("table tr")
         row_count = candidates.count()
         log.info("Fallback: scanning %d table rows", row_count)
@@ -863,20 +904,6 @@ def _parse_slots(ctx, players: int) -> list[dict]:
                 continue
             if re.search(r"\b(tee\s*time|date|player|price)\b", text, re.IGNORECASE) and i == 0:
                 continue
-            # Skip blocked/unavailable tee times
-            if re.search(r"\bUnavailable\b", text, re.IGNORECASE):
-                log.info("Fallback: skipping unavailable row at %r", t)
-                continue
-            # Skip partially-booked rows — strip non-player tokens and check for names
-            stripped = re.sub(r"\d{1,2}:\d{2}\s*(AM|PM)", "", text, flags=re.IGNORECASE)
-            stripped = re.sub(r"\b\d+(?:st|nd|rd|th)\s+TEE\b", "", stripped, flags=re.IGNORECASE)
-            stripped = re.sub(r"\[.*?Tee\]", "", stripped, flags=re.IGNORECASE)
-            stripped = re.sub(r"\b(?:Book\s*Now|Unavailable|Request|Reserved|Reserve|Event|Edit|View\s*Registrants|JOIN)\b", "", stripped, flags=re.IGNORECASE)
-            stripped = re.sub(r"\[\d+\]|\(\d+\)", "", stripped)
-            stripped = re.sub(r"\s+", " ", stripped).strip()
-            if len(stripped) > 5:
-                log.info("Fallback: skipping partial row at %r (remaining: %r)", t, stripped[:80])
-                continue
             is_clickable = el.evaluate("""e => {
                 if (e.tagName === 'A' || e.tagName === 'BUTTON') return true;
                 if (e.getAttribute('onclick')) return true;
@@ -886,7 +913,7 @@ def _parse_slots(ctx, players: int) -> list[dict]:
             }""")
             if not is_clickable:
                 continue
-            log.info("Fallback found empty slot: time=%r text=%r", t, text[:80])
+            log.info("Fallback found slot: time=%r text=%r", t, text[:80])
             price_match = re.search(r"\$\s*([\d.]+)", text)
             slots.append({
                 "time": t,
@@ -985,62 +1012,6 @@ def _reexpand_player_selector(page: Page, after_player_num: int) -> None:
         """)
     except Exception:
         pass
-
-
-def _set_party_size_filter(ctx, players: int) -> None:
-    """
-    Set the tee sheet's party size filter so LaunchReserver() opens the modal
-    for the right number of players. Must be called before clicking Reserve.
-    Clubessential/Jonas Club typically exposes a select or radio group at the top
-    of the tee sheet. Tries common ID patterns; logs a warning and continues if
-    none are found (site defaults to Foursome which is fine if it fails for Single).
-    """
-    party_val = str(players)
-    selectors = [
-        "#ctl00_ctrl_TeeTimeSearch_ddlPartySize",
-        "#ctl00_ctrl_TeeTimeSearch_ddlNumPlayers",
-        "#ctl00_ctrl_TeeTimeSearch_ddlNumGolfers",
-        "select[id*='PartySize']",
-        "select[id*='NumPlayers']",
-        "select[id*='NumGolfers']",
-        "select[id*='GolferCount']",
-        "select[id*='ddlParty']",
-        "select[id*='ddlGolfer']",
-        "select[id*='PartySz']",
-    ]
-    for sel in selectors:
-        try:
-            el = ctx.locator(sel).first
-            if el.count():
-                el.select_option(value=party_val)
-                log.info("Party size filter → %d via %s", players, sel)
-                ctx.wait_for_timeout(500)
-                return
-        except Exception:
-            continue
-    # Try JS: look for any select whose options include "Single" or "1"
-    try:
-        found = ctx.evaluate(f"""
-            () => {{
-                const selects = [...document.querySelectorAll('select')];
-                for (const s of selects) {{
-                    const opts = [...s.options].map(o => o.value);
-                    if (opts.includes('{party_val}')) {{
-                        s.value = '{party_val}';
-                        s.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return s.id || 'unknown-id';
-                    }}
-                }}
-                return null;
-            }}
-        """)
-        if found:
-            log.info("Party size filter → %d via JS fallback (select id=%s)", players, found)
-            ctx.wait_for_timeout(500)
-            return
-    except Exception:
-        pass
-    log.warning("Could not set party size filter to %d — Reserve will use site default", players)
 
 
 def _find_axis_frame(page: Page):
@@ -1158,25 +1129,32 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
     except Exception as e:
         log.warning("Modal diagnostic failed: %s", e)
 
-    # --- Dismiss any notice/error overlay before touching the form ---
-    # The site shows a "Notice" popup (e.g. "Another member is currently holding
-    # this tee time") that must be dismissed before any form fields can be
-    # interacted with — clicks on dropdowns go to the overlay otherwise.
-    try:
-        ok_sel = (
-            "#ctl00_ctrl_MakeTeeTime_MakeChangesBtn, "
-            "[onclick*='hideError'], "
-            "a:has-text('OK')"
-        )
-        ok_btn = ctx.locator(ok_sel).first
-        if ok_btn.count() and ok_btn.is_visible():
-            ok_btn.click()
-            log.info("Dismissed booking modal notice overlay (clicked OK)")
-            page.wait_for_timeout(800)
-        else:
-            log.info("No notice overlay to dismiss")
-    except Exception as e:
-        log.debug("Notice dismiss check failed: %s", e)
+    # --- Dismiss notice overlay if present ---
+    # The site sometimes shows a notice like "Unable to hold X:XX AM — another
+    # member is holding it. You have an exclusive hold on X:YY AM." with an OK
+    # button (MakeChangesBtn / hideError). If this isn't clicked the form is
+    # blocked and "Make Tee Time" will not submit.
+    notice_selectors = [
+        "#ctl00_ctrl_MakeTeeTime_MakeChangesBtn",
+        "a[onclick*='hideError' i]",
+        "a:has-text('OK')",
+        "button:has-text('OK')",
+        "input[value='OK' i]",
+    ]
+    notice_dismissed = False
+    for sel in notice_selectors:
+        try:
+            loc = ctx.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click(force=True)
+                log.info("Dismissed notice overlay via %r", sel)
+                page.wait_for_timeout(800)
+                notice_dismissed = True
+                break
+        except Exception:
+            continue
+    if not notice_dismissed:
+        log.info("No notice overlay to dismiss")
 
     # --- Set P1 (Brett) transport to "Cart Lease" ---
     # P1 name is auto-filled by the site; we need to fix the transport dropdown.
@@ -1186,7 +1164,6 @@ def _fill_booking_modal(page: Page, axis_frame, party_size: str, player_names: l
 
     # Strategy 1: Telerik $find — iterate items and select "Cart Lease" directly
     for transport_combo_id in [
-        "ctl00_ctrl_MakeTeeTime_P1_transport_oCombo",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_Transport",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_CartType",
         "ctl00_ctrl_MakeTeeTime_P1_PCombo_TransportType",
@@ -1466,6 +1443,25 @@ def fetch_available_tee_times(date: str, players: int) -> list[dict]:
 _PARTY_LABELS = {1: "Single", 2: "Twosome", 3: "Threesome", 4: "Foursome"}
 
 
+def _set_party_size_filter(ctx, players: int) -> None:
+    """Set the tee-sheet party-size filter dropdown."""
+    label = _PARTY_LABELS.get(players, "Single")
+    for sel_id in [
+        "masterPageUC_MPCA17_ctl04_ctrl_Booking_drpGroupSize",
+        "ctrl_Booking_drpGroupSize",
+    ]:
+        try:
+            loc = ctx.locator(f"#{sel_id}")
+            if loc.count():
+                loc.select_option(label=label)
+                log.info("Party size filter → %r (via #%s)", label, sel_id)
+                ctx.wait_for_timeout(1500)
+                return
+        except Exception as e:
+            log.debug("Party size via #%s failed: %s", sel_id, e)
+    log.warning("Could not set party size filter to %r", label)
+
+
 def make_reservation(
     date: str,
     time: str,
@@ -1474,94 +1470,70 @@ def make_reservation(
     member_id: str,
 ) -> dict:
     party_size = _PARTY_LABELS.get(players, "Single")
+    booking_open_env = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            ctx = _open_booking_for(page, date, players)
+            # In pre-warm mode skip date navigation — we'll do it precisely below.
+            ctx = _open_booking_for(page, date, players, skip_nav=bool(booking_open_env))
 
-            # ------------------------------------------------------------------
-            # Pre-warm: when AUTO_RESERVE_BOOKING_OPEN_TIME is set the script
-            # started early. Strategy:
-            #   1. Sleep until 15s before the booking window opens.
-            #   2. Call changeDate() to pre-navigate to the target date — the
-            #      tee sheet loads showing all slots as Unavailable.
-            #   3. Use wait_for_selector() (Playwright mutation observer) to
-            #      block until NC_TimeSlotPanelSlotAvailable appears in the DOM.
-            #      This reacts within milliseconds of the server releasing slots,
-            #      faster than any page reload or human click.
-            # ------------------------------------------------------------------
-            booking_open_env = os.getenv("AUTO_RESERVE_BOOKING_OPEN_TIME", "")
             if booking_open_env:
                 import time as _time
                 from zoneinfo import ZoneInfo
                 tz = ZoneInfo("America/Toronto")
-                now = datetime.now(tz)
                 h_o, m_o, s_o = (int(x) for x in booking_open_env.split(":"))
-                open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
+                target_dt = datetime.strptime(date, "%Y-%m-%d")
+                js_date = f"{target_dt.month}/{target_dt.day}/{target_dt.year}"
 
-                # Step 1: sleep until 15s before open
-                pre_sleep = (open_dt - now).total_seconds() - 15
-                if pre_sleep > 1:
-                    log.info(
-                        "Pre-warm: browser ready at %s — sleeping %.0fs until 15s before open",
-                        now.strftime("%H:%M:%S"), pre_sleep,
-                    )
-                    _time.sleep(pre_sleep)
-
-                # Step 2: pre-navigate to the target date
-                tgt = datetime.strptime(date, "%Y-%m-%d")
-                js_date = f"{tgt.month}/{tgt.day}/{tgt.year}"
-                log.info(
-                    "Pre-warm: pre-navigating to %s at %s Eastern...",
-                    date, datetime.now(tz).strftime("%H:%M:%S"),
-                )
-                try:
-                    fired = ctx.evaluate(f"""
-                        () => {{
-                            if (typeof changeDate !== 'undefined') {{
-                                changeDate('{js_date}'); return true;
+                def _prewarm_changedate() -> None:
+                    try:
+                        result = ctx.evaluate(f"""
+                            () => {{
+                                if (typeof changeDate !== 'undefined') {{
+                                    changeDate('{js_date}');
+                                    return 'ok:{js_date}';
+                                }}
+                                return 'changeDate not defined';
                             }}
-                            return false;
-                        }}
-                    """)
-                    if fired:
-                        ctx.wait_for_timeout(3500)
-                    else:
-                        _navigate_teesheet_to(ctx, tgt)
-                except Exception as e:
-                    log.warning("Pre-navigate failed: %s — using _navigate_teesheet_to fallback", e)
-                    _navigate_teesheet_to(ctx, tgt)
-                # Re-set party size after changeDate() AJAX reloads the sheet
-                _set_party_size_filter(ctx, players)
+                        """)
+                        log.info("Pre-warm changeDate: %s", result)
+                    except Exception as exc:
+                        log.warning("Pre-warm changeDate failed: %s", exc)
 
-                # Step 3: watch the DOM with a mutation observer until the first
-                # available slot appears — fires within ~100ms of the server opening
-                # the booking window, faster than any reload or manual click.
-                log.info(
-                    "Pre-warm: DOM watch armed at %s Eastern — waiting for slots...",
-                    datetime.now(tz).strftime("%H:%M:%S"),
-                )
+                # ── Step 1: sleep until 10 min before open, navigate to target date ──
+                now = datetime.now(tz)
+                open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
+                pre_nav_sleep = (open_dt - now).total_seconds() - 10 * 60
+                if pre_nav_sleep > 1:
+                    log.info("Pre-warm: sleeping %.0fs until 10 min before window...", pre_nav_sleep)
+                    _time.sleep(pre_nav_sleep)
+
+                _prewarm_changedate()
+                ctx.wait_for_timeout(2500)
+                _set_party_size_filter(ctx, players)
+                _screenshot(page, "04_prewarm_nav")
+
+                # ── Step 2: sleep until 5 s before open, refresh, arm observer ──
+                now = datetime.now(tz)
+                pre_open_sleep = (open_dt - now).total_seconds() - 5
+                if pre_open_sleep > 1:
+                    log.info("Pre-warm: sleeping %.0fs until 5s before window...", pre_open_sleep)
+                    _time.sleep(pre_open_sleep)
+
+                _prewarm_changedate()
+                log.info("Pre-warm: window opens in ~5s — waiting for first available slot...")
                 try:
                     ctx.wait_for_selector(
                         "td[class*='NC_TimeSlotPanelSlotAvailable']",
                         state="attached",
-                        timeout=45_000,
+                        timeout=90_000,
                     )
-                    log.info(
-                        "PRE-WARM FIRE: slots live at %s Eastern — booking NOW",
-                        datetime.now(tz).strftime("%H:%M:%S.%f")[:-3],
-                    )
-                except Exception:
-                    log.warning("wait_for_selector timed out — reloading as fallback")
-                    try:
-                        page.reload(wait_until="networkidle", timeout=20_000)
-                    except Exception:
-                        pass
-                    ctx = _find_booking_frame(page)
-                    _navigate_teesheet_to(ctx, tgt)
-                log.info("Pre-warm complete — parsing slots NOW")
+                    log.info("Pre-warm: SLOTS DETECTED — booking immediately!")
+                except PlaywrightTimeout:
+                    log.warning("Pre-warm: 90s timeout waiting for slots — proceeding anyway")
+                _screenshot(page, "04_prewarm_slots_ready")
 
             slots = _parse_slots(ctx, players)
 
@@ -1570,36 +1542,14 @@ def make_reservation(
                 (s for s in slots if s["time"].upper() == time.upper()), None
             )
             if not target:
-                # Exact match not available — fall back to earliest slot at or after the
-                # requested time (mirrors pick_slot() in auto_reserve.py).
-                def _mins(t: str) -> int:
-                    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)", t.strip(), re.IGNORECASE)
-                    if not m:
-                        return 0
-                    h, mn, ap = int(m.group(1)), int(m.group(2)), m.group(3).upper()
-                    if ap == "PM" and h != 12:
-                        h += 12
-                    elif ap == "AM" and h == 12:
-                        h = 0
-                    return h * 60 + mn
-
-                req_mins = _mins(time)
-                later = [s for s in slots if _mins(s["time"]) >= req_mins]
-                target = later[0] if later else (slots[0] if slots else None)
-                if not target:
-                    available = [s["time"] for s in slots]
-                    return {
-                        "success": False,
-                        "message": (
-                            f"Time {time} not found in available slots. "
-                            f"Available: {available}"
-                        ),
-                    }
-                log.warning(
-                    "Exact time %r not available — falling back to next slot: %r",
-                    time, target["time"],
-                )
-                time = target["time"]
+                available = [s["time"] for s in slots]
+                return {
+                    "success": False,
+                    "message": (
+                        f"Time {time} not found in available slots. "
+                        f"Available: {available}"
+                    ),
+                }
 
             # Re-locate the slot's time cell, then navigate up to the parent <tr>
             # and find the "Reserve" control among the sibling cells.
@@ -1699,7 +1649,6 @@ def make_reservation(
             return {
                 "success": True,
                 "confirmation_number": conf_number,
-                "time": time,
                 "message": (
                     f"Tee time reserved: {players} player(s) on {date} at {time}. "
                     f"Players: {', '.join(player_names)}. "
@@ -1721,158 +1670,137 @@ def add_players_to_reservation(
     member_id: str,
 ) -> dict:
     """
-    Phase 2: edit an existing Single booking to upgrade it to a full party.
-
-    Flow:
-      1. Login and navigate to the tee sheet for `date`.
-      2. Set party size filter to len(player_names) so the tee sheet shows
-         Edit links on our already-booked slot.
-      3. Find the reserved slot at `time` and click its Edit link.
-      4. Inside the edit modal, change the party size from Single to the full
-         count and fill P2-P4 player names using _fill_booking_modal.
-      5. Submit and confirm.
+    Phase 2: edit an existing Single reservation and upgrade to a Foursome.
+    Logs in, navigates to the target date, finds the reserved slot, clicks Edit,
+    changes party size, fills P2–P4, and submits "Update Tee Time".
     """
-    players = len(player_names)
-    party_size = _PARTY_LABELS.get(players, "Foursome")
+    all_players = len(player_names)
+    party_label = _PARTY_LABELS.get(all_players, "Foursome")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            # Open the booking page for the target date with the full party size filter
-            ctx = _open_booking_for(page, date, players)
-            _screenshot(page, "phase2_01_teesheet")
+            ctx = _open_booking_for(page, date, all_players)
+            _screenshot(page, "p2_01_booking_page")
+            time_upper = time.upper().strip()
 
-            # Find the time cell for our reserved slot (any class — booked not Available)
-            target_dt = datetime.strptime(date, "%Y-%m-%d")
-            time_upper = time.strip().upper()
+            # Find the reserved time row
+            found_row = None
+            time_cells = ctx.locator("span.timeText")
+            n_cells = time_cells.count()
+            log.info("Phase 2: scanning %d time cells for %r", n_cells, time_upper)
+            for i in range(n_cells):
+                cell = time_cells.nth(i)
+                raw = (cell.text_content() or "").strip().upper()
+                parsed = _parse_time(raw)
+                if parsed and parsed.upper() == time_upper:
+                    found_row = cell.locator("xpath=../..").first
+                    log.info("Phase 2: found time at cell %d", i)
+                    break
 
-            # Try the time cell via text content regardless of slot class
+            if found_row is None:
+                loc = ctx.locator(f"*:has-text('{time}')").first
+                if loc.count():
+                    found_row = loc.locator("xpath=..").first
+                    log.info("Phase 2: found time via broad selector")
+
+            if found_row is None:
+                _screenshot(page, "p2_error_time_not_found")
+                return {"success": False, "message": f"Phase 2: {time} row not found on {date}"}
+
+            # Click Edit in that row
             edit_clicked = False
-            for cell_sel in [
-                f"td:has-text('{time}')",
-                f"td:has-text('{time_upper}')",
-                "td[class*='NC_TimeSlotPanel']",
+            for sel in [
+                "a:has-text('Edit')", "a:has-text('Modify')",
+                "input[value*='Edit' i]", "[onclick*='Edit' i]",
             ]:
                 try:
-                    cells = ctx.locator(cell_sel)
-                    n = cells.count()
-                    for i in range(n):
-                        cell = cells.nth(i)
-                        cell_text = (cell.text_content() or "").strip()
-                        if time.upper() in cell_text.upper() or time_upper in cell_text.upper():
-                            parent_row = cell.locator("xpath=..")
-                            edit_el = parent_row.locator(
-                                "a:has-text('Edit'), a:has-text('Modify'), "
-                                "a:has-text('Change'), button:has-text('Edit'), "
-                                "[onclick*='Edit' i], [onclick*='LaunchReserver' i]"
-                            ).first
-                            if edit_el.count() and edit_el.is_visible():
-                                edit_el.click()
-                                log.info("Phase 2: clicked Edit on reservation at %s", time)
-                                edit_clicked = True
-                                break
-                    if edit_clicked:
+                    loc = found_row.locator(sel).first
+                    if loc.count():
+                        loc.click(force=True)
+                        log.info("Phase 2: Edit clicked via %r", sel)
+                        edit_clicked = True
                         break
-                except Exception as ex:
-                    log.debug("Phase 2 edit search (%s): %s", cell_sel, ex)
+                except Exception:
                     continue
 
             if not edit_clicked:
-                # Fallback: look for any Edit link near text matching our time
-                try:
-                    edit_links = ctx.locator(
-                        "a:has-text('Edit'), a:has-text('Modify'), [onclick*='LaunchReserver' i]"
-                    )
-                    n = edit_links.count()
-                    log.info("Phase 2: %d Edit/Modify links on tee sheet — scanning for %s", n, time)
-                    _dump_html(ctx, "phase2_edit_search")
-                    for i in range(n):
-                        el = edit_links.nth(i)
-                        row = el.locator("xpath=../..").first
-                        row_text = (row.text_content() or "").upper()
-                        if time.upper() in row_text:
-                            el.click()
-                            log.info("Phase 2: fallback Edit click (row text matched %s)", time)
+                for sel in ["a:has-text('Edit')", "a:has-text('Modify')"]:
+                    try:
+                        loc = ctx.locator(sel).first
+                        if loc.count():
+                            loc.click(force=True)
+                            log.info("Phase 2: Edit clicked (page-wide) via %r", sel)
                             edit_clicked = True
                             break
-                except Exception as ex:
-                    log.warning("Phase 2 fallback edit search failed: %s", ex)
+                    except Exception:
+                        continue
 
             if not edit_clicked:
-                _screenshot(page, "phase2_error_no_edit")
-                return {
-                    "success": False,
-                    "message": (
-                        f"Could not find Edit link for {time} on {date}. "
-                        "The reservation is still held by Brett. Add players manually."
-                    ),
-                }
+                _screenshot(page, "p2_error_no_edit_link")
+                return {"success": False, "message": "Phase 2: Edit link not found for reserved slot"}
 
-            # Wait for the edit modal to open
             page.wait_for_timeout(3000)
-            _screenshot(page, "phase2_02_edit_modal")
             axis_frame = _find_axis_frame(page)
-            ctx_modal = axis_frame if axis_frame is not None else page
-            _dump_html(ctx_modal, "phase2_edit_modal_html")
+            ctx2 = axis_frame if axis_frame else page
+            _screenshot(page, "p2_02_edit_modal")
+            _dump_html(ctx2, "p2_02_edit_modal_html")
 
-            # Try to change party size inside the modal from Single → full party
-            party_changed = False
-            party_val = str(players)
-            for sel in [
-                "select[id*='PartyType']", "select[id*='PartySz']",
-                "select[id*='NumPlayers']", "select[id*='NumGolfers']",
-                "select[id*='PartySize']", "select[id*='GolferCount']",
-            ]:
-                try:
-                    el = ctx_modal.locator(sel).first
-                    if el.count():
-                        el.select_option(value=party_val)
-                        log.info("Phase 2: party size → %d via %s", players, sel)
-                        ctx_modal.wait_for_timeout(1500)
-                        party_changed = True
-                        break
-                except Exception:
-                    continue
-            if not party_changed:
-                # JS fallback: find any select whose options contain the party count
-                try:
-                    found = ctx_modal.evaluate(f"""
-                        () => {{
-                            const selects = [...document.querySelectorAll('select')];
-                            for (const s of selects) {{
-                                const opts = [...s.options].map(o => o.value);
-                                if (opts.includes('{party_val}')) {{
-                                    s.value = '{party_val}';
-                                    s.dispatchEvent(new Event('change', {{bubbles: true}}));
-                                    return s.id || 'unknown';
-                                }}
-                            }}
-                            return null;
-                        }}
-                    """)
-                    if found:
-                        log.info("Phase 2: party size → %d via JS (select id=%s)", players, found)
-                        ctx_modal.wait_for_timeout(1500)
-                        party_changed = True
-                except Exception:
-                    pass
-            if not party_changed:
-                log.warning(
-                    "Phase 2: could not change party size in modal — "
-                    "attempting to fill player names anyway"
-                )
-
-            # Fill P2-P4 using existing modal fill logic (P1 already set as Brett)
-            _fill_booking_modal(page, axis_frame, party_size, player_names)
-
-            # Wait for confirmation
+            # Change party size to Foursome via Telerik
             try:
-                page.wait_for_load_state("networkidle", timeout=30_000)
+                tk_result = ctx2.evaluate(f"""
+                    () => {{
+                        if (typeof $find === 'undefined') return 'no $find';
+                        const combo = $find('ctl00_ctrl_MakeTeeTime_drpPartySize');
+                        if (!combo) return 'combo not found';
+                        const items = combo.get_items();
+                        for (let i = 0; i < items.get_count(); i++) {{
+                            const item = items.getItem(i);
+                            if ((item.get_text() || '').toLowerCase().includes('{party_label.lower()}')) {{
+                                item.select();
+                                return 'selected: ' + item.get_text();
+                            }}
+                        }}
+                        combo.set_text('{party_label}');
+                        return 'set_text fallback';
+                    }}
+                """)
+                log.info("Phase 2 party size change: %s", tk_result)
+                if tk_result and ("selected:" in tk_result or "set_text" in tk_result):
+                    page.wait_for_timeout(1500)
+            except Exception as e:
+                log.warning("Phase 2: could not change party size in modal: %s", e)
+
+            _fill_booking_modal(page, axis_frame, party_label, player_names)
+
+            # Submit "Update Tee Time"
+            update_clicked = False
+            for btn_sel in [
+                "#ctl00_ctrl_MakeTeeTime_lbBook",
+                "a:has-text('Update Tee Time')",
+                "a:has-text('Update')",
+                "[id*='lbBook']",
+            ]:
+                for ctx_try in [ctx2, page]:
+                    try:
+                        loc = ctx_try.locator(btn_sel).first
+                        if loc.count():
+                            loc.click(force=True)
+                            log.info("Phase 2: Update Tee Time clicked via %r", btn_sel)
+                            update_clicked = True
+                            break
+                    except Exception:
+                        continue
+                if update_clicked:
+                    break
+
+            page.wait_for_timeout(3000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15_000)
             except Exception:
                 pass
-            _screenshot(page, "phase2_03_confirmation")
-            _dump_html(page, "phase2_confirmation_html")
+            _screenshot(page, "p2_03_after_update")
 
             body = page.evaluate("document.body.innerText") or ""
             if axis_frame:
@@ -1880,25 +1808,20 @@ def add_players_to_reservation(
                     body += "\n" + (axis_frame.evaluate("document.body.innerText") or "")
                 except Exception:
                     pass
-            log.info("Phase 2 confirmation text (400): %r", body[:400])
-
-            if any(kw in body.lower() for kw in ["Make Tee Time", "Discard Changes"]):
-                # Still in modal — submit may not have fired
-                return {
-                    "success": False,
-                    "message": "Phase 2 modal still open after submit — check debug_screenshots.",
-                }
+            log.info("Phase 2 result text (500): %r", body[:500])
 
             return {
                 "success": True,
                 "message": (
-                    f"Players added to {time} on {date}: {', '.join(player_names)}."
+                    f"Phase 2 complete: {party_label} on {date} at {time} "
+                    f"— {', '.join(player_names)}"
                 ),
             }
 
-        except Exception:
-            _screenshot(page, "phase2_error")
-            raise
+        except Exception as e:
+            _screenshot(page, "p2_error")
+            log.error("Phase 2 failed: %s", e)
+            return {"success": False, "message": f"Phase 2 exception: {e}"}
         finally:
             browser.close()
 
