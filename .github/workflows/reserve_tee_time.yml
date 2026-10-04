@@ -43,21 +43,23 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 5:30 AM Eastern (bail out if past 6:20 AM)
+      - name: Wait until 5:30 AM Eastern (bail out if past 7:00 AM)
         if: github.event_name == 'schedule'
         run: |
-          # If the runner starts after 6:20 AM it's too late for the pre-warm
-          # window — Python needs at least 10 min to log in before 6:30 AM.
+          # Bail out only if it's past 7:00 AM Eastern — beyond that point
+          # the prime early slots are likely gone and it's not worth booking.
+          # Between 6:30–7:00 AM the Python pre-warm skips its sleep and books
+          # whatever is still available immediately.
           BAILOUT=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=6, minute=20, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=7, minute=0, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           if [ $NOW -ge $BAILOUT ]; then
-            echo "ERROR: Runner started after 6:20 AM Eastern — too late for pre-warm. Book manually."
+            echo "ERROR: Runner started after 7:00 AM Eastern — too late to book. Book manually."
             exit 1
           fi
           TARGET=$(python3 -c "
