@@ -1,12 +1,10 @@
 name: Reserve Fort Myers Tee Time
 
 on:
-  schedule:
-    # Fire at 02:00 UTC Tuesday (10:00 PM EDT Monday / 9:00 PM EST Monday).
-    # GitHub cron runs ~45-50 min late, so we start ~1 hour early.
-    # The "Wait" step below sleeps until exactly midnight America/New_York,
-    # when the Fort Myers booking window opens (7 days out).
-    - cron: '0 2 * * 2'
+  # Schedule disabled — Fort Myers agent not working.
+  # Re-enable by uncommenting the schedule block below.
+  # schedule:
+  #   - cron: '0 2 * * 2'
   workflow_dispatch:
     inputs:
       date:
