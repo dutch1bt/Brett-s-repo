@@ -2,13 +2,13 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 05:00 UTC (1:00 AM EDT / 12:00 AM EST).
-    # GitHub cron can run 4-6 hours late on Sunday mornings.
-    # Starting at 05:00 UTC gives up to a 5.5-hour buffer before the
-    # 6:30 AM Eastern booking window. The Wait step sleeps the runner
-    # until 5:30 AM Eastern; the Python pre-warm loop then handles the
-    # precise 6:30 AM window open.
-    - cron: '0 5 * * 0'
+    # Fire at 00:00 UTC Saturday night (8:00 PM EDT / 7:00 PM EST).
+    # GitHub cron has been running 6+ hours late on Sunday mornings.
+    # Firing Saturday evening gives an 8.5-hour buffer before the 6:30 AM
+    # Eastern booking window. The Wait step sleeps until 5:30 AM Eastern;
+    # the Python pre-warm loop handles the precise 6:30 AM window open.
+    # Even a 7-hour GitHub delay puts the runner at 3:00 AM EDT — fine.
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
       date:
@@ -43,25 +43,13 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 5:30 AM Eastern (bail out if past 7:00 AM)
+      - name: Wait until 5:30 AM Eastern
         if: github.event_name == 'schedule'
         run: |
-          # Bail out only if it's past 7:00 AM Eastern — beyond that point
-          # the prime early slots are likely gone and it's not worth booking.
-          # Between 6:30–7:00 AM the Python pre-warm skips its sleep and books
-          # whatever is still available immediately.
-          BAILOUT=$(python3 -c "
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-          tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=7, minute=0, second=0, microsecond=0)
-          print(int(t.timestamp()))
-          ")
-          NOW=$(date -u +%s)
-          if [ $NOW -ge $BAILOUT ]; then
-            echo "ERROR: Runner started after 7:00 AM Eastern — too late to book. Book manually."
-            exit 1
-          fi
+          # Sleep until 5:30 AM Eastern so Python has time to log in and
+          # navigate before the 6:30 AM booking window opens.
+          # If the runner is already past 5:30 AM, continue immediately —
+          # the Python pre-warm block handles any late start gracefully.
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
@@ -69,6 +57,7 @@ jobs:
           t = datetime.now(tz).replace(hour=5, minute=30, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
+          NOW=$(date -u +%s)
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
             echo "Waiting ${DIFF}s until 5:30 AM Eastern..."
