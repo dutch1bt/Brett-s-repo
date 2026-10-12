@@ -107,9 +107,11 @@ def target_date() -> str:
     weekday_env = os.getenv("AUTO_RESERVE_TARGET_WEEKDAY", "").strip()
     if weekday_env.isdigit():
         target_wd = int(weekday_env)  # 0=Monday … 6=Sunday
-        # Advance to the next (or same) occurrence of target_wd
-        delta = (target_wd - candidate.weekday()) % 7
-        candidate += timedelta(days=delta)
+        # Snap back to the most recent occurrence of target_wd on or before
+        # the candidate.  Example: candidate=Monday Oct 26, target=Sunday →
+        # delta=1 → Oct 25 (Sun).  Scheduled run fires on Sunday so delta=0.
+        delta = (candidate.weekday() - target_wd) % 7
+        candidate -= timedelta(days=delta)
 
     return candidate.strftime("%Y-%m-%d")
 
