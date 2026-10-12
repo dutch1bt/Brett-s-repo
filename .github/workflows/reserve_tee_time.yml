@@ -78,6 +78,8 @@ jobs:
           AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
           # Pre-warm: Python logs in early and waits for exactly 07:30:00 AM Eastern
           AUTO_RESERVE_BOOKING_OPEN_TIME: '07:30:00'
+          # Snap auto-computed date to Sunday (6) so manual triggers work on any weekday
+          AUTO_RESERVE_TARGET_WEEKDAY: '6'
           # Phase 2: edit the reservation and add all players after securing the slot
           AUTO_RESERVE_ALL_PLAYERS: '4'
           AUTO_RESERVE_ALL_PLAYER_NAMES: 'Brett,Brian Cogley,Rob Boss,Rocky Wiltsey'

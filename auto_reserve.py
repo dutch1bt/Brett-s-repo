@@ -92,10 +92,26 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def target_date() -> str:
-    """Return the booking target date (YYYY-MM-DD), DAYS_AHEAD days from today."""
+    """Return the booking target date (YYYY-MM-DD).
+
+    Starts DAYS_AHEAD days from today, then snaps forward to the configured
+    weekday (AUTO_RESERVE_TARGET_WEEKDAY: 0=Mon … 6=Sun) when set.
+    This ensures manual workflow_dispatch triggers pick the right day even
+    when today is not the expected weekday (e.g. triggering on a Monday
+    still lands on a Sunday 14 days out, not a Monday).
+    """
     days_ahead = int(os.getenv("AUTO_RESERVE_DAYS_AHEAD", "14"))
     today = datetime.now().date()
-    return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    candidate = today + timedelta(days=days_ahead)
+
+    weekday_env = os.getenv("AUTO_RESERVE_TARGET_WEEKDAY", "").strip()
+    if weekday_env.isdigit():
+        target_wd = int(weekday_env)  # 0=Monday … 6=Sunday
+        # Advance to the next (or same) occurrence of target_wd
+        delta = (target_wd - candidate.weekday()) % 7
+        candidate += timedelta(days=delta)
+
+    return candidate.strftime("%Y-%m-%d")
 
 
 def _time_to_mins(time_str: str) -> int | None:
