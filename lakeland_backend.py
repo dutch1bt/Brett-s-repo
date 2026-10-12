@@ -1502,40 +1502,58 @@ def make_reservation(
                     except Exception as exc:
                         log.warning("Pre-warm changeDate failed: %s", exc)
 
-                # ── Step 1: sleep until 10 min before open, navigate to target date ──
+                # Compute the exact moment this date's booking window opened.
+                # The window opens DAYS_AHEAD days before the target date at open_time.
+                days_ahead = int(os.getenv("AUTO_RESERVE_DAYS_AHEAD", "14"))
+                window_open_date = target_dt.date() - timedelta(days=days_ahead)
                 now = datetime.now(tz)
-                open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
-                if open_dt <= now:  # already past today's window — target tomorrow
-                    open_dt += timedelta(days=1)
-                pre_nav_sleep = (open_dt - now).total_seconds() - 10 * 60
-                if pre_nav_sleep > 1:
-                    log.info("Pre-warm: sleeping %.0fs until 10 min before window...", pre_nav_sleep)
-                    _time.sleep(pre_nav_sleep)
+                open_dt = datetime(
+                    window_open_date.year, window_open_date.month, window_open_date.day,
+                    h_o, m_o, s_o, tzinfo=tz,
+                )
 
-                _prewarm_changedate()
-                ctx.wait_for_timeout(2500)
-                _set_party_size_filter(ctx, players)
-                _screenshot(page, "04_prewarm_nav")
-
-                # ── Step 2: sleep until 5 s before open, refresh, arm observer ──
-                now = datetime.now(tz)
-                pre_open_sleep = (open_dt - now).total_seconds() - 5
-                if pre_open_sleep > 1:
-                    log.info("Pre-warm: sleeping %.0fs until 5s before window...", pre_open_sleep)
-                    _time.sleep(pre_open_sleep)
-
-                _prewarm_changedate()
-                log.info("Pre-warm: window opens in ~5s — waiting for first available slot...")
-                try:
-                    ctx.wait_for_selector(
-                        "td[class*='NC_TimeSlotPanelSlotAvailable']",
-                        state="attached",
-                        timeout=90_000,
+                if open_dt <= now:
+                    # Booking window for this date is already open — skip pre-warm,
+                    # navigate immediately and fetch whatever slots remain.
+                    log.info(
+                        "Pre-warm: window for %s opened %s (already past) — fetching immediately",
+                        date, open_dt.strftime("%Y-%m-%d %H:%M %Z"),
                     )
-                    log.info("Pre-warm: SLOTS DETECTED — booking immediately!")
-                except PlaywrightTimeout:
-                    log.warning("Pre-warm: 90s timeout waiting for slots — proceeding anyway")
-                _screenshot(page, "04_prewarm_slots_ready")
+                    _prewarm_changedate()
+                    ctx.wait_for_timeout(2500)
+                    _set_party_size_filter(ctx, players)
+                    _screenshot(page, "04_prewarm_nav")
+                else:
+                    # ── Step 1: sleep until 10 min before open, navigate to target date ──
+                    pre_nav_sleep = (open_dt - now).total_seconds() - 10 * 60
+                    if pre_nav_sleep > 1:
+                        log.info("Pre-warm: sleeping %.0fs until 10 min before window...", pre_nav_sleep)
+                        _time.sleep(pre_nav_sleep)
+
+                    _prewarm_changedate()
+                    ctx.wait_for_timeout(2500)
+                    _set_party_size_filter(ctx, players)
+                    _screenshot(page, "04_prewarm_nav")
+
+                    # ── Step 2: sleep until 5 s before open, refresh, arm observer ──
+                    now = datetime.now(tz)
+                    pre_open_sleep = (open_dt - now).total_seconds() - 5
+                    if pre_open_sleep > 1:
+                        log.info("Pre-warm: sleeping %.0fs until 5s before window...", pre_open_sleep)
+                        _time.sleep(pre_open_sleep)
+
+                    _prewarm_changedate()
+                    log.info("Pre-warm: window opens in ~5s — waiting for first available slot...")
+                    try:
+                        ctx.wait_for_selector(
+                            "td[class*='NC_TimeSlotPanelSlotAvailable']",
+                            state="attached",
+                            timeout=90_000,
+                        )
+                        log.info("Pre-warm: SLOTS DETECTED — booking immediately!")
+                    except PlaywrightTimeout:
+                        log.warning("Pre-warm: 90s timeout waiting for slots — proceeding anyway")
+                    _screenshot(page, "04_prewarm_slots_ready")
 
             slots = _parse_slots(ctx, players)
 
