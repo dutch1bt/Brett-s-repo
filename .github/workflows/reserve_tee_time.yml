@@ -4,9 +4,9 @@ on:
   schedule:
     # Fire at 00:00 UTC Saturday night (8:00 PM EDT / 7:00 PM EST).
     # GitHub cron has been running 6+ hours late on Sunday mornings.
-    # Firing Saturday evening gives an 8.5-hour buffer before the 6:30 AM
+    # Firing Saturday evening gives an 9.5-hour buffer before the 7:30 AM
     # Eastern booking window. The Wait step sleeps until 5:30 AM Eastern;
-    # the Python pre-warm loop handles the precise 6:30 AM window open.
+    # the Python pre-warm loop handles the precise 7:30 AM window open.
     # Even a 7-hour GitHub delay puts the runner at 3:00 AM EDT — fine.
     - cron: '0 0 * * 0'
   workflow_dispatch:
@@ -76,8 +76,8 @@ jobs:
           AUTO_RESERVE_PLAYERS: '1'
           AUTO_RESERVE_PLAYER_NAMES: 'Brett'
           AUTO_RESERVE_PREFERRED_TIME: '7:30 AM'
-          # Pre-warm: Python logs in early and waits for exactly 06:30:00 AM Eastern
-          AUTO_RESERVE_BOOKING_OPEN_TIME: '06:30:00'
+          # Pre-warm: Python logs in early and waits for exactly 07:30:00 AM Eastern
+          AUTO_RESERVE_BOOKING_OPEN_TIME: '07:30:00'
           # Phase 2: edit the reservation and add all players after securing the slot
           AUTO_RESERVE_ALL_PLAYERS: '4'
           AUTO_RESERVE_ALL_PLAYER_NAMES: 'Brett,Brian Cogley,Rob Boss,Rocky Wiltsey'
