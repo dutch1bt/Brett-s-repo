@@ -1505,6 +1505,8 @@ def make_reservation(
                 # ── Step 1: sleep until 10 min before open, navigate to target date ──
                 now = datetime.now(tz)
                 open_dt = now.replace(hour=h_o, minute=m_o, second=s_o, microsecond=0)
+                if open_dt <= now:  # already past today's window — target tomorrow
+                    open_dt += timedelta(days=1)
                 pre_nav_sleep = (open_dt - now).total_seconds() - 10 * 60
                 if pre_nav_sleep > 1:
                     log.info("Pre-warm: sleeping %.0fs until 10 min before window...", pre_nav_sleep)
