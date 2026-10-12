@@ -1481,6 +1481,7 @@ def make_reservation(
 
             if booking_open_env:
                 import time as _time
+                from datetime import timedelta as _timedelta
                 from zoneinfo import ZoneInfo
                 tz = ZoneInfo("America/Toronto")
                 h_o, m_o, s_o = (int(x) for x in booking_open_env.split(":"))
@@ -1505,7 +1506,7 @@ def make_reservation(
                 # Compute the exact moment this date's booking window opened.
                 # The window opens DAYS_AHEAD days before the target date at open_time.
                 days_ahead = int(os.getenv("AUTO_RESERVE_DAYS_AHEAD", "14"))
-                window_open_date = target_dt.date() - timedelta(days=days_ahead)
+                window_open_date = target_dt.date() - _timedelta(days=days_ahead)
                 now = datetime.now(tz)
                 open_dt = datetime(
                     window_open_date.year, window_open_date.month, window_open_date.day,
