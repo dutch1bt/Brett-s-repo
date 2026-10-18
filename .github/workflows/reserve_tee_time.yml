@@ -2,13 +2,13 @@ name: Reserve Sunday Tee Time
 
 on:
   schedule:
-    # Fire at 05:00 UTC (1:00 AM EDT / 12:00 AM EST).
+    # Fire at 06:00 UTC (2:00 AM EDT / 1:00 AM EST).
     # GitHub cron can run 4-6 hours late on Sunday mornings.
-    # Starting at 05:00 UTC gives up to a 5.5-hour buffer before the
-    # 6:30 AM Eastern booking window. The Wait step sleeps the runner
-    # until 5:30 AM Eastern; the Python pre-warm loop then handles the
-    # precise 6:30 AM window open.
-    - cron: '0 5 * * 0'
+    # Starting at 06:00 UTC means even a 0-delay run starts at 2:00 AM EDT,
+    # giving a total job time of ~5h30m (< 6h hard limit). The Wait step
+    # sleeps the runner until 7:28 AM Eastern; Python pre-warm handles the
+    # precise 7:30 AM window open.
+    - cron: '0 6 * * 0'
   workflow_dispatch:
     inputs:
       date:
@@ -43,36 +43,35 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Wait until 5:30 AM Eastern (bail out if past 6:20 AM)
+      - name: Wait until 7:28 AM Eastern (bail out if past 7:25 AM)
         if: github.event_name == 'schedule'
         run: |
-          # If the runner starts after 6:20 AM it's too late for the pre-warm
-          # window — Python needs at least 10 min to log in before 6:30 AM.
+          # If the runner starts after 7:25 AM it's too close to the 7:30 AM
+          # window — Python needs at least 5 min to log in before 7:30 AM.
           BAILOUT=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=6, minute=20, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=7, minute=25, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           NOW=$(date -u +%s)
           if [ $NOW -ge $BAILOUT ]; then
-            echo "ERROR: Runner started after 6:20 AM Eastern — too late for pre-warm. Book manually."
-            exit 1
+            echo "ERROR: Runner started after 7:25 AM Eastern — too late for pre-warm. Python will fetch immediately."
           fi
           TARGET=$(python3 -c "
           from datetime import datetime
           from zoneinfo import ZoneInfo
           tz = ZoneInfo('America/Toronto')
-          t = datetime.now(tz).replace(hour=5, minute=30, second=0, microsecond=0)
+          t = datetime.now(tz).replace(hour=7, minute=28, second=0, microsecond=0)
           print(int(t.timestamp()))
           ")
           DIFF=$((TARGET - NOW))
           if [ $DIFF -gt 0 ]; then
-            echo "Waiting ${DIFF}s until 5:30 AM Eastern..."
+            echo "Waiting ${DIFF}s until 7:28 AM Eastern..."
             sleep $DIFF
           else
-            echo "Already past 5:30 AM Eastern (diff=${DIFF}s) — continuing immediately."
+            echo "Already past 7:28 AM Eastern (diff=${DIFF}s) — continuing immediately."
           fi
 
       - name: Book tee time (Phase 1 — single player, fastest possible)
